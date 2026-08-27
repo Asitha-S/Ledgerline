@@ -1,0 +1,67 @@
+==========================================================================================
+FINDING: float precision at BenchRec amount magnitudes
+==========================================================================================
+max |amount| in eval           : 6,567,592,109.00
+float64 resolution at that size: 9.5367431640625e-07
+two values one cent apart, |y-x| computes as: np.float64(0.009999997913837433)
+integer cents difference       : 1
+
+==========================================================================================
+FINDING: multi-key groups repeat rather than partition (train)
+==========================================================================================
+multi-key B rows in train: 6,678
+
+regime, per B row (%):
+regime
+repeat       83.18
+neither      14.17
+partition     2.65
+
+fraction of A rows in the group carrying B's exact amount:
+0.0    14.54
+0.1     0.04
+0.2     0.03
+0.3     0.24
+0.4     0.09
+0.5     5.12
+0.6     0.64
+0.7     2.62
+0.8     2.50
+0.9     3.94
+1.0    70.23
+
+------------------------------------------------------------------------------------------
+WORKED EXAMPLE — matchId 184541000741 (repeat regime)
+------------------------------------------------------------------------------------------
+6 A rows, 6 B rows, 6 distinct allocation keys
+
+B rows (external statement):
+        B_id B_debitOrCredit  B_amount
+160725871107              DR 203235.00
+670730959472              DR 203235.00
+996827316754              DR 203235.00
+293269702131              DR 203235.00
+123784971159              DR 203235.00
+462933939786              DR 203235.00
+
+A rows (internal ledger):
+        A_id A_debitOrCredit  A_amount key
+883399681180              CR 203235.00  K1
+434384224841              CR 203235.00  K2
+680184429448              CR 203235.00  K3
+444196382816              CR 203235.00  K4
+258049165276              CR 203235.00  K5
+991589274456              CR 203235.00  K6
+
+B amount                       203,235.00
+sum of all A amounts         1,219,410.00   (a partition would equal B)
+A rows with amount == B  6 of 6         (a repeat means all of them)
+target set               ['K1', 'K2', 'K3', 'K4', 'K5', 'K6']
+
+==========================================================================================
+Real eval label mix
+==========================================================================================
+total solution rows 32,048
+  single-key 30,057 (93.79%)
+  multi-key  1,779 (5.55%)
+  blank      212 (0.66%)

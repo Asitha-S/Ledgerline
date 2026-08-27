@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# BenchRec source data — not ours to redistribute, and 100MB+ per file.
+# Obtain from the ICAIF 2023 benchmark competition; see README.
+# ---------------------------------------------------------------------------
+BenchRec_cash_v1.0_*.csv
+MatcherByChatGPT_submission.csv
+
+# ---------------------------------------------------------------------------
+# Generated outputs — all reproducible from the scripts. See README "Reproduce".
+# ---------------------------------------------------------------------------
+synth_transactions.csv
+synth_solution.csv
+synth_manifest.json
+synth_small_transactions.csv
+synth_small_solution.csv
+synth_small_manifest.json
+retrieve_predictions*.csv
+complete_predictions.csv
+controller_audit_*.jsonl
+controller_exceptions_*.csv
+
+# Largest verbatim excerpt of the source data (20 sample rows x 4 files);
+# regenerate with: python explore_benchrec.py
+benchrec_report.md
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.pyc
+.venv/
+venv/
+.ipynb_checkpoints/

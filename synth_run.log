@@ -1,0 +1,136 @@
+========================================================================================================
+FULL PIPELINE OVER SYNTHETIC BATCHES — retriever + completion @ 0.5
+========================================================================================================
+
+  *** OUT-OF-DOMAIN RUN ***
+  The completion classifier is trained on BenchRec_cash_v1.0_train.csv and is
+  applied here WITHOUT retraining, refitting or recalibration on synthetic data.
+  Every synthetic number below is an out-of-domain transfer result. Testing that
+  transfer is part of the point of this run.
+
+Fitting completion classifier on BenchRec_cash_v1.0_train.csv (train only).
+  19,339 candidate decisions, 8,905 positive (46.05%), fitted in 111.0s
+  >>> This model is now FROZEN. It is not refitted on synthetic data.
+
+========================================================================================================
+BATCH: 50-group batch   (synth_small_*)
+========================================================================================================
+
+  overall  completion OFF  match  82.000%  precision  95.349%
+           completion ON   match  78.000%  precision  90.698%
+
+  PER-CLASS (classes from the manifest; corruption cuts overlap the
+  structure classes and each other, so they are listed separately):
+
+                           class  rows  match_off_%  match_on_%  prec_off_%  prec_on_%
+                         neither     1        0.000       0.000         NaN        NaN
+                      one_to_one    47       87.234      82.979     100.000     95.122
+                       partition     1        0.000       0.000       0.000      0.000
+                          repeat     1        0.000       0.000       0.000      0.000
+      [corruption] fee_deduction     6        0.000       0.000         NaN        NaN
+      [corruption] timing_offset    11       81.818      81.818      81.818     81.818
+[corruption] duplicate_reference     3      100.000      33.333     100.000     33.333
+                             ALL    50       82.000      78.000      95.349     90.698
+
+  ALL row reconciles with score.score(): True
+
+  THROUGHPUT
+      groups                           50
+      total rows processed            160   (A 110  B 50)
+      wall clock                     0.13 s   (rank + classify + assemble; excludes one-off classifier fit)
+      rows/sec                    1,247.1
+      B records/sec                 389.7
+      -> 160 rows / 50 B records / 50 groups: satisfies the stated 50+ record minimum.
+
+  REPEAT CLASS — what completion actually recovered
+      repeat groups                                     1
+      FULL key set recovered (exact match)              0
+      added some, all correct, still incomplete         0
+      added at least one WRONG key                      0
+      added nothing (left as single key)                1
+
+========================================================================================================
+BATCH: 50,000-group batch   (synth_*)
+========================================================================================================
+
+  overall  completion OFF  match  84.330%  precision  91.095%
+           completion ON   match  82.030%  precision  88.610%
+
+  PER-CLASS (classes from the manifest; corruption cuts overlap the
+  structure classes and each other, so they are listed separately):
+
+                           class  rows  match_off_%  match_on_%  prec_off_%  prec_on_%
+                         neither   714        0.000       0.000       0.000      0.000
+                      one_to_one 46944       89.328      84.507      95.768     90.600
+                       partition   144        0.000       0.000       0.000      0.000
+                          repeat  1855        0.000      60.000       0.000     60.000
+                     unmatchable   343       67.347      67.347      67.347     67.347
+      [corruption] fee_deduction  4688        0.128       0.128       0.392      0.392
+      [corruption] timing_offset 12465       84.268      84.108      91.094     90.920
+[corruption] duplicate_reference  4024       75.944      25.398      82.662     27.644
+                             ALL 50000       84.330      82.030      91.095     88.610
+
+  ALL row reconciles with score.score(): True
+
+  THROUGHPUT
+      groups                       50,000
+      total rows processed        158,534   (A 108,534  B 50,000)
+      wall clock                   167.84 s   (rank + classify + assemble; excludes one-off classifier fit)
+      rows/sec                      944.6
+      B records/sec                 297.9
+
+  REPEAT CLASS — what completion actually recovered
+      repeat groups                                 1,855
+      FULL key set recovered (exact match)          1,113
+      added some, all correct, still incomplete        74
+      added at least one WRONG key                    135
+      added nothing (left as single key)              533
+
+========================================================================================================
+FEE EXPERIMENT — amount block widened to admit A down to 5% BELOW B (asymmetric)
+========================================================================================================
+
+  Baseline block: |A - B| <= 0.01, symmetric.
+  Widened block:  that, OR  0.95*|B| <= |A| <= |B|  with matching sign.
+  Asymmetric because a fee reduces the settled amount and never inflates it.
+  This is ONE setting, reported as-is. The width was not tuned.
+  The classifier is still the frozen BenchRec-train model — now applied over a
+  candidate set built differently from the one it was fitted on, which is a
+  second domain shift on top of the synthetic one.
+
+--------------------------------------------------------------------------------------------------------
+  50-group batch
+--------------------------------------------------------------------------------------------------------
+
+                           class  rows_base  match_on_%_base  match_on_%_wide  d_match_on  prec_on_%_base  prec_on_%_wide  d_prec_on
+                         neither          1            0.000            0.000       0.000             NaN           0.000        NaN
+                      one_to_one         47           82.979           93.617      10.638          95.122          95.652      0.530
+                       partition          1            0.000            0.000       0.000           0.000           0.000      0.000
+                          repeat          1            0.000            0.000       0.000           0.000           0.000      0.000
+      [corruption] fee_deduction          6            0.000           83.333      83.333             NaN         100.000        NaN
+      [corruption] timing_offset         11           81.818           81.818       0.000          81.818          81.818      0.000
+[corruption] duplicate_reference          3           33.333           33.333       0.000          33.333          33.333      0.000
+                             ALL         50           78.000           88.000      10.000          90.698          89.796     -0.902
+
+      overall match      78.000%  ->   88.000%   (+10.000 pts)
+      overall precision  90.698%  ->   89.796%   (-0.902 pts)
+      wall clock        0.13s  ->  0.08s
+
+--------------------------------------------------------------------------------------------------------
+  50,000-group batch
+--------------------------------------------------------------------------------------------------------
+
+                           class  rows_base  match_on_%_base  match_on_%_wide  d_match_on  prec_on_%_base  prec_on_%_wide  d_prec_on
+                         neither        714            0.000            0.140       0.140           0.000           0.140      0.140
+                      one_to_one      46944           84.507           89.948       5.441          90.600          89.948     -0.652
+                       partition        144            0.000            0.000       0.000           0.000           0.000      0.000
+                          repeat       1855           60.000           62.749       2.749          60.000          62.749      2.749
+                     unmatchable        343           67.347            0.000     -67.347          67.347           0.000    -67.347
+      [corruption] fee_deduction       4688            0.128           73.891      73.763           0.392          73.891     73.499
+      [corruption] timing_offset      12465           84.108           91.111       7.003          90.920          91.111      0.191
+[corruption] duplicate_reference       4024           25.398           22.714      -2.684          27.644          22.714     -4.930
+                             ALL      50000           82.030           86.780       4.750          88.610          86.780     -1.830
+
+      overall match      82.030%  ->   86.780%   (+4.750 pts)
+      overall precision  88.610%  ->   86.780%   (-1.830 pts)
+      wall clock        167.84s  ->  165.81s

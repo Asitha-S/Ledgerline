@@ -1,0 +1,110 @@
+
+################################################################################################
+# generate(n_groups=50, seed=7)  ->  prefix 'synth_small'
+################################################################################################
+
+  rows 160  (A 110, B 50)   generated in 0.03s
+  class counts: {'one_to_one': 47, 'neither': 1, 'repeat': 1, 'partition': 1}
+  files: synth_small_transactions.csv, synth_small_solution.csv, synth_small_manifest.json
+
+================================================================================================
+VALIDATION
+================================================================================================
+
+--- baseline 1: exact amount matching ---
+  overall match 56.000%   precision 65.116%   abstain 14.000%
+
+                           class  rows  match_%  precision_%
+                         neither     1    0.000          NaN
+                      one_to_one    47   57.447       65.854
+                       partition     1    0.000        0.000
+                          repeat     1  100.000      100.000
+      [corruption] fee_deduction     6    0.000          NaN
+      [corruption] timing_offset    11   45.455       45.455
+[corruption] duplicate_reference     3    0.000        0.000
+
+--- baseline 2: existing retriever recipe (cosine + amount) ---
+
+================================================================================================
+RETRIEVAL PASS
+================================================================================================
+
+  vocabulary 5,061 features; fit+transform 0.07 s
+  mean query length: full 50.2 chars, attributes-only 30.7 chars
+
+  retrieval, all configurations 0.02 s
+  overall match 82.000%   precision 95.349%   abstain 14.000%
+
+                           class  rows  match_%  precision_%
+                         neither     1    0.000          NaN
+                      one_to_one    47   87.234      100.000
+                       partition     1    0.000        0.000
+                          repeat     1    0.000        0.000
+      [corruption] fee_deduction     6    0.000          NaN
+      [corruption] timing_offset    11   81.818       81.818
+[corruption] duplicate_reference     3  100.000      100.000
+
+------------------------------------------------------------------------------------------------
+DIFFICULTY GATE — is exact amount matching above 90%?
+------------------------------------------------------------------------------------------------
+
+  exact amount matching overall match rate: 56.000%
+
+  Below the 90% gate by 34.000 points — exact amount matching does
+  not solve this data, so the set is worth keeping.
+
+################################################################################################
+# generate(n_groups=50,000, seed=7)  ->  prefix 'synth'
+################################################################################################
+
+  rows 158,534  (A 108,534, B 50,000)   generated in 18.23s
+  class counts: {'one_to_one': 46944, 'repeat': 1855, 'neither': 714, 'unmatchable': 343, 'partition': 144}
+  files: synth_transactions.csv, synth_solution.csv, synth_manifest.json
+
+================================================================================================
+VALIDATION
+================================================================================================
+
+--- baseline 1: exact amount matching ---
+  overall match 57.000%   precision 61.720%   abstain 7.648%
+
+                           class  rows  match_%  precision_%
+                         neither   714    0.000        0.000
+                      one_to_one 46944   57.720       62.016
+                       partition   144    0.000        0.000
+                          repeat  1855   62.965       62.965
+                     unmatchable   343   68.805        0.000
+      [corruption] fee_deduction  4688    0.000        0.000
+      [corruption] timing_offset 12465   56.606       61.351
+[corruption] duplicate_reference  4024    0.000        0.000
+
+--- baseline 2: existing retriever recipe (cosine + amount) ---
+
+================================================================================================
+RETRIEVAL PASS
+================================================================================================
+
+  vocabulary 325,463 features; fit+transform 103.91 s
+  mean query length: full 50.3 chars, attributes-only 30.7 chars
+
+  retrieval, all configurations 150.63 s
+  overall match 84.330%   precision 91.095%   abstain 7.426%
+
+                           class  rows  match_%  precision_%
+                         neither   714    0.000        0.000
+                      one_to_one 46944   89.328       95.768
+                       partition   144    0.000        0.000
+                          repeat  1855    0.000        0.000
+                     unmatchable   343   67.347        0.000
+      [corruption] fee_deduction  4688    0.128        0.392
+      [corruption] timing_offset 12465   84.268       91.094
+[corruption] duplicate_reference  4024   75.944       82.662
+
+------------------------------------------------------------------------------------------------
+DIFFICULTY GATE — is exact amount matching above 90%?
+------------------------------------------------------------------------------------------------
+
+  exact amount matching overall match rate: 57.000%
+
+  Below the 90% gate by 33.000 points — exact amount matching does
+  not solve this data, so the set is worth keeping.

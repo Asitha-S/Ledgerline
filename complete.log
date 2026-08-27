@@ -1,0 +1,155 @@
+Loading and ranking candidates (retriever recipe reproduced, retrieve.py untouched)
+
+================================================================================================
+RETRIEVAL PASS
+================================================================================================
+
+  vocabulary 249,153 features; fit+transform 23.75 s
+  mean query length: full 50.7 chars, attributes-only 28.3 chars
+
+  retrieval, all configurations 20.49 s
+  self-check vs retrieve.py top-1: 100.0000% identical
+  ranked train (68,975 B rows) and eval (32,048 B rows) in 141.9s
+
+================================================================================================
+STEP 1 — WHAT DISTINGUISHES THE ADDITIONAL KEYS' A ROWS (train, multi-key)
+================================================================================================
+
+  train B rows with a multi-key label:        6,678
+  of those, retrieved top-1 is IN the gold set: 5,564 (83.32%)
+  additional gold keys examined:              41,646
+
+  (a) VALUE DATE
+      additional key's A rows share the top-1 A row's value date: 99.99%
+
+  (b) AMOUNTS — do they sum toward B?
+      top-1's A rows alone equal B's amount exactly:  63.14%
+      ALL gold keys' A rows sum to B's amount exactly: 2.59%
+      adding the extra rows moves the sum CLOSER to B: 2.25%
+
+  (c) SHARED DIGIT RUNS between additional A rows and the top-1 A row
+      share a run of length >= 7: 98.56%
+
+  (d) IS THE SECOND-BEST COSINE CANDIDATE A TRUE ADDITIONAL KEY?
+      rows with a distinct rank-2 candidate: 3,879
+      rank-2 key is in the gold set:         92.52%
+      rank-2 key is a genuinely ADDITIONAL key: 92.52%
+
+  -> value date does not separate them — the additional keys sit on the same date as the top-1, so the date window cannot help
+  -> amounts do NOT reliably sum to B, so a subset-sum rule is not available
+  -> the rank-2 candidate IS usually a true additional key, which is the signal a completion step can exploit
+
+================================================================================================
+STEP 2 — RECALL CEILING FROM TOP-5 (train)
+================================================================================================
+
+  multi-key rows:                              6,678
+  gold set FULLY contained in top-5:            2,517 (37.69%)   <-- the ceiling
+  at least one gold key in top-5:              5,697 (85.31%)
+
+  single-key rows:                             61,062
+  gold key present in top-5:                   58,828 (96.34%)
+
+  A perfect subset-picker over the top-5 could raise multi-key match rate
+  from 0% to at most 37.69%. Since multi-key rows are 9.68% of the file,
+  that is worth at most 3.65 points of overall match rate.
+
+================================================================================================
+STEP 2 — RECALL CEILING FROM TOP-5 (eval — this is the binding one)
+================================================================================================
+
+  multi-key rows:                              1,779
+  gold set FULLY contained in top-5:            857 (48.17%)   <-- the ceiling
+  at least one gold key in top-5:              1,433 (80.55%)
+
+  single-key rows:                             30,057
+  gold key present in top-5:                   28,990 (96.45%)
+
+  A perfect subset-picker over the top-5 could raise multi-key match rate
+  from 0% to at most 48.17%. Since multi-key rows are 5.55% of the file,
+  that is worth at most 2.67 points of overall match rate.
+
+================================================================================================
+GATE — IS THE CEILING WORKABLE?
+================================================================================================
+
+  eval multi-key ceiling: 48.17%   (gate: 15%)
+  Above the gate — proceeding to step 3.
+
+================================================================================================
+STEP 3 — CLASSIFIER: DOES THIS CANDIDATE BELONG IN THE SET?
+================================================================================================
+
+  training rows (candidate decisions): 19,339
+  positives (candidate is in gold):    8,905 (46.0468%)
+  features: rank, score, score_gap_to_top1, score_ratio, log_amt_diff, log_top1_amt_diff, log_pair_sum_diff, same_amt_as_top1, date_diff_days, same_date_as_top1, shares_run_with_query, shares_run_with_top1, n_distinct_keys_top5, n_candidates, log_text_len
+
+  Trained on TRAIN only, default hyperparameters, decision threshold 0.5.
+  No eval-label tuning.
+  fit in 1.85 s
+
+  eval candidate decisions: 7,370   accepted: 2,950
+  candidate-level precision: 88.92%   recall: 96.19%
+
+================================================================================================
+RESULTS — COMPLETION OFF vs ON
+================================================================================================
+
+        config  overall_match_%  overall_prec_%  single_key_match_%  single_key_prec_%  multi_key_match_%  blank_match_%
+completion OFF          89.9900         93.5908             95.3688            98.4138             0.0000        82.5472
+ completion ON          91.7936         95.4665             94.6302            97.6517            44.9691        82.5472
+
+  Correct counts by label type:
+        config  single_key_correct  multi_key_correct  blank_correct
+completion OFF               28665                  0            175
+ completion ON               28443                800            175
+
+------------------------------------------------------------------------------------------------
+  NET EFFECT OF COMPLETION
+------------------------------------------------------------------------------------------------
+
+      multi-key rows gained:  +800
+      single-key rows LOST:   -222   (a wrongly added key breaks a correct answer)
+      net rows:               +578
+      overall match rate:     89.9900% -> 91.7936%  (+1.8036 pts)
+      overall precision:      93.5908% -> 95.4665%  (+1.8757 pts)
+      single-key precision:   98.4138% -> 97.6517%  (-0.7621 pts)
+
+      -> Completion is a NET GAIN.
+
+================================================================================================
+ACCEPTANCE THRESHOLD SWEEP
+================================================================================================
+
+  Rows gained/lost are row-level against completion-off: 'gained' = wrong with
+  completion off and correct with it on, 'lost' = the reverse. Completion can
+  only ever break a single-key answer, never fix one, since adding a key makes
+  the set size >= 2.
+
+threshold  overall_match_%  overall_prec_%  single_match_%  single_prec_%  multi_match_%  gained  lost  net
+      OFF          89.9900         93.5908         95.3688        98.4138         0.0000       0     0    0
+      0.5          91.7936         95.4665         94.6302        97.6517        44.9691     800   222  578
+     0.55          91.7873         95.4600         94.6435        97.6654        44.6318     794   218  576
+      0.6          91.7936         95.4665         94.6701        97.6929        44.2945     788   210  578
+     0.65          91.7780         95.4503         94.6934        97.7169        43.6200     776   203  573
+      0.7          91.7374         95.4081         94.7167        97.7409        42.4958     756   196  560
+     0.75          91.7093         95.3789         94.7666        97.7924        41.1467     732   181  551
+      0.8          91.6313         95.2977         94.7999        97.8268        39.1793     697   171  526
+     0.85          91.4846         95.1452         94.8265        97.8542        36.0877     642   163  479
+      0.9          91.2631         94.9148         94.8964        97.9263        30.9162     550   142  408
+     0.95          90.8575         94.4929         95.0161        98.0499        21.5852     384   106  278
+
+------------------------------------------------------------------------------------------------
+  WHERE DOES SINGLE-KEY PRECISION RETURN TO THE COMPLETION-OFF BASELINE?
+------------------------------------------------------------------------------------------------
+
+  completion-off single-key precision: 98.4138%
+  target: >= 98.4%
+
+  NO threshold in 0.50-0.95 restores single-key precision to 98.4%.
+  The closest is threshold 0.95 at 98.0499%, still 0.3501 pts short, with multi-key match 21.5852%.
+
+  Not picking one — the table is above.
+
+  predictions (completion ON, threshold 0.5) written to C:\Razorpay Project\complete_predictions.csv
+  total wall clock 149.3s

@@ -1,0 +1,145 @@
+================================================================================================
+EXPERIMENT B (measurement) — SHARED DIGIT RUNS, LENGTH 7-12
+================================================================================================
+
+  True matches tested (single-key labels): 30,057
+  Share at least one digit run of length 7-12: 19,394 / 30,057 = 64.5241%
+  Share none:                                 10,663 / 30,057 = 35.4759%
+
+  Distribution of the LONGEST shared run length (12 = 12 or more):
+ longest_shared_run  true_matches  pct_of_all_true_matches
+                  7            30                   0.0998
+                  8           222                   0.7386
+                  9         16904                  56.2398
+                 10          2234                   7.4325
+                 11             2                   0.0067
+                 12             2                   0.0067
+
+  Note: a shared run of length >= 7 necessarily contains a shared 7-window, so
+  the filter below tests length 7 — that is exactly the 'shares any run of
+  length 7-12' predicate, not a narrower one.
+
+================================================================================================
+RETRIEVAL PASS
+================================================================================================
+
+  vocabulary 249,153 features; fit+transform 39.27 s
+  mean query length: full 50.7 chars, attributes-only 28.3 chars
+
+  retrieval, all configurations 26.29 s
+
+================================================================================================
+EXPERIMENT B (measurement) — HOW DISCRIMINATIVE IS A SHARED RUN?
+================================================================================================
+
+  Queries measured (amount block @ 0.01 non-empty): 30,640
+  Candidates surviving amount blocking   mean 14.72   median 1
+  Of those, sharing a digit run          mean 6.30   median 1
+  Share of surviving candidates that share a run: 42.7661%
+
+  Queries where NO surviving candidate shares a run: 10,447 (34.0960%)
+  Queries where exactly one does:                    10,088 (32.9243%)
+  Queries where more than one does:                  10,105 (32.9798%)
+
+  Amount blocking has already cut the pool to ~15, so the question is
+  whether a shared run narrows it further.
+
+  It does NOT narrow it much: 42.77% of amount-surviving candidates
+  share a run with the query. A predicate that keeps well over a third of the
+  pool is a weak discriminator at this stage — most of its power was already
+  spent by the amount block.
+
+  Critically, on 34.10% of queries NO surviving candidate
+  shares a run at all. As a hard filter that forces an abstention on every one of
+  them, which caps match rate accordingly — the boost form avoids that by falling
+  back to cosine.
+
+  Redundancy check — can the boost change anything at all?
+      queries where boost COULD reorder (some but not all candidates share): 6,131
+      of those, cosine's top-1 ALREADY shares a run: 6,131 (100.0000%)
+
+      That is 100%. The boost cannot change a single prediction, and not by
+      coincidence: the shared digit run IS what the character n-grams are
+      scoring on. Cosine has already absorbed this signal, so adding it
+      explicitly is redundant.
+
+================================================================================================
+AMOUNT TOLERANCE SWEEP — choose deliberately
+================================================================================================
+
+  Date-window-only pool for reference: 6380.9 candidates/query
+
+tolerance  ceiling_%  true_dropped_%  pool_mean  pool_median  single_match_%  single_prec_%  abstain_%  gap_to_ceiling
+    exact    96.0808          3.9192      14.05          1.0         94.7699        98.4516     4.4839          1.3109
+     0.01    96.7196          3.2804      14.08          1.0         95.3688        98.4138     3.8474          1.3508
+     1.00    97.6345          2.3655      14.15          1.0         95.9178        97.9746     2.8551          1.7167
+ 0.1% rel    98.3664          1.6336      26.43          3.0         94.3873        95.3998     1.5040          3.9791
+   1% rel    98.4163          1.5837      46.14          9.0         89.1839        89.5623     0.6209          9.2324
+   5% rel    98.4662          1.5338      91.10         35.0         85.2247        85.4009     0.2902         13.2415
+
+  Highest match rate:  1.00 at 95.9178% (ceiling 97.6345%)
+  Highest precision:   exact at 98.4516%
+
+  'gap_to_ceiling' is how much the similarity function loses BELOW what the
+  tolerance admits. A small gap means the tolerance, not the text scoring, is
+  the binding constraint.
+
+================================================================================================
+EXPERIMENTS A AND B — all at amount tolerance 0.01, everything else fixed
+================================================================================================
+
+               config  single_match_%  single_prec_%  top1_%  not_in_top5_%  predicted  abstain_%  overall_match_%
+        cosine+amount         95.3688        98.4138 95.3688         3.5499      29127     3.8474          89.9900
+expA_attr_only+amount         93.0399        96.0106 93.0399         4.2752      29127     3.8474          87.8058
+          expB_filter         62.8073        99.4521 62.8073        36.9465      18982    36.3330          59.5638
+           expB_boost         95.3688        98.4138 95.3688         3.5499      29127     3.8474          89.9900
+      expA+expB_boost         93.0399        96.0106 93.0399         4.2752      29127     3.8474          87.8058
+
+================================================================================================
+WHICH EXPERIMENT HELPED, AND BY HOW MUCH
+================================================================================================
+
+  Reference — cosine + amount@0.01:
+      top-1 95.3688%   not-in-top-5 3.5499%   precision 98.4138%
+
+  EXPERIMENT A — B_transactionAttributes only
+      top-1          93.0399%  (-2.3289 pts)
+      not-in-top-5   4.2752%  (+0.7253 pts)
+      match rate     93.0399%  (-2.3289 pts)
+      precision      96.0106%  (-2.4032 pts)
+      abstention     3.8474%
+      -> DID NOT HELP on match rate
+
+  EXPERIMENT B — shared run as a HARD FILTER
+      top-1          62.8073%  (-32.5615 pts)
+      not-in-top-5   36.9465%  (+33.3966 pts)
+      match rate     62.8073%  (-32.5615 pts)
+      precision      99.4521%  (+1.0383 pts)
+      abstention     36.3330%
+      -> DID NOT HELP on match rate
+
+  EXPERIMENT B — shared run as a STRONG BOOST
+      top-1          95.3688%  (+0.0000 pts)
+      not-in-top-5   3.5499%  (+0.0000 pts)
+      match rate     95.3688%  (+0.0000 pts)
+      precision      98.4138%  (+0.0000 pts)
+      abstention     3.8474%
+      -> NO EFFECT — indistinguishable from the reference
+
+  A + B together (boost form)
+      top-1          93.0399%  (-2.3289 pts)
+      not-in-top-5   4.2752%  (+0.7253 pts)
+      match rate     93.0399%  (-2.3289 pts)
+      precision      96.0106%  (-2.4032 pts)
+      abstention     3.8474%
+      -> DID NOT HELP on match rate
+
+================================================================================================
+RUNTIME
+================================================================================================
+
+  fit + transform           39.27 s
+  retrieval (all configs)   26.29 s
+  wall clock                73.82 s
+  queries                  32,048
+  records/sec             1,219.1

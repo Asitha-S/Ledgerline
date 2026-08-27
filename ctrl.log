@@ -1,0 +1,178 @@
+============================================================================================================
+CONTROLLER — agent layer over the existing matching stack
+============================================================================================================
+
+  CHANGE 1: fee widening is now PER BATCH, not global.
+      OFF for BenchRec eval — real BenchRec has effectively no fee deductions,
+      so the widened band admits only false candidates (overall match
+      91.794% -> 75.181%) and masks the no_candidate trigger by guaranteeing a
+      non-empty pool (1,408 -> 165 firings).
+      ON for the synthetic batch — it contains fees by construction (9.4% of
+      groups), where widening gained +4.750 points of overall match.
+      Both settings are run against both batches below so this is shown.
+
+  CHANGE 2: low_confidence thresholds are FITTED ON TRAIN ONLY.
+
+Ranking BenchRec train and fitting the completion classifier (train only).
+  19,339 candidate decisions, 8,905 positive (46.05%), fitted in 110.9s
+
+============================================================================================================
+LOW_CONFIDENCE THRESHOLD FIT — BenchRec TRAIN ONLY
+============================================================================================================
+
+  Grid searched against train's inline targetAllocation labels. Eval and the
+  synthetic batches are not consulted at any point in this section.
+
+  'lc_fired' counts rows where the trigger fires at all (non-exclusive — the
+  framing the 68.7% eval figure used). 'lc_only' counts rows the trigger alone
+  removes from auto-close, which is its true marginal cost.
+
+  CAVEAT: the completion classifier's probabilities on train are IN-SAMPLE, so
+  completion_added behaves better here than it will out of sample. That shifts
+  which rows are already escalated by other triggers, so lc_only is mildly
+  optimistic. The score/margin thresholds themselves do not depend on it.
+
+ min_top1  min_margin  lc_fired  lc_correct_%  lc_only  lc_only_correct_%  auto_closed  auto_coverage_%  auto_precision_%
+     0.00       0.000         0           NaN        0                NaN        60237           87.332            96.056
+     0.00       0.005     20660        86.713    19040             90.305        41197           59.727            98.713
+     0.00       0.010     21635        86.568    19887             90.345        40350           58.499            98.870
+     0.00       0.020     22769        86.864    20951             90.678        39286           56.957            98.923
+     0.00       0.040     23944        87.124    22032             90.922        38205           55.390            99.016
+     0.00       0.080     27746        86.910    24911             91.658        35326           51.216            99.156
+     0.02       0.000      7408        88.431     6693             94.621        53544           77.628            96.235
+     0.02       0.005     22561        87.239    20853             90.855        39384           57.099            98.809
+     0.02       0.010     22674        86.990    20900             90.713        39337           57.031            98.894
+     0.02       0.020     22769        86.864    20951             90.678        39286           56.957            98.923
+     0.02       0.040     23944        87.124    22032             90.922        38205           55.390            99.016
+     0.02       0.080     27746        86.910    24911             91.658        35326           51.216            99.156
+     0.04       0.000      8687        87.360     7832             93.820        52405           75.977            96.390
+     0.04       0.005     23649        87.365    21870             91.020        38367           55.625            98.926
+     0.04       0.010     23719        87.263    21890             90.982        38347           55.596            98.952
+     0.04       0.020     23748        87.241    21906             90.975        38331           55.572            98.959
+     0.04       0.040     23944        87.124    22032             90.922        38205           55.390            99.016
+     0.04       0.080     27746        86.910    24911             91.658        35326           51.216            99.156
+     0.06       0.000      9243        87.461     8366             93.725        51871           75.203            96.432
+     0.06       0.005     24164        87.432    22369             91.064        37868           54.901            99.004
+     0.06       0.010     24229        87.346    22387             91.031        37850           54.875            99.028
+     0.06       0.020     24251        87.332    22397             91.030        37840           54.860            99.030
+     0.06       0.040     24409        87.242    22490             90.996        37747           54.726            99.070
+     0.06       0.080     27746        86.910    24911             91.658        35326           51.216            99.156
+     0.08       0.000     11715        89.432    10677             94.764        49560           71.852            96.334
+     0.08       0.005     26496        88.296    24635             91.764        35602           51.616            99.025
+     0.08       0.010     26507        88.279    24640             91.749        35597           51.609            99.036
+     0.08       0.020     26522        88.274    24647             91.752        35590           51.598            99.036
+     0.08       0.040     26639        88.217    24706             91.739        35531           51.513            99.057
+     0.08       0.080     27746        86.910    24911             91.658        35326           51.216            99.156
+     0.10       0.000     12360        89.636    11297             94.813        48940           70.953            96.342
+     0.10       0.005     27132        88.427    25250             91.865        34987           50.724            99.080
+     0.10       0.010     27137        88.422    25252             91.862        34985           50.721            99.082
+     0.10       0.020     27147        88.419    25256             91.863        34981           50.715            99.082
+     0.10       0.040     27221        88.377    25276             91.866        34961           50.686            99.085
+     0.10       0.080     28250        87.126    25415             91.804        34822           50.485            99.159
+     0.15       0.000     14305        90.374    13125             95.162        47112           68.303            96.305
+     0.15       0.005     28941        88.933    26983             92.269        33254           48.212            99.128
+     0.15       0.010     28946        88.928    26985             92.266        33252           48.209            99.131
+     0.15       0.020     28953        88.927    26989             92.267        33248           48.203            99.131
+     0.15       0.040     29001        88.914    26998             92.266        33239           48.190            99.134
+     0.15       0.080     29964        87.749    27104             92.208        33133           48.036            99.203
+
+------------------------------------------------------------------------------------------------------------
+  SELECTION: lc_correct_% < 50% (catches more wrong than right), then maximise auto-close coverage
+------------------------------------------------------------------------------------------------------------
+
+  NO combination in the grid gets the trigger below 50%.
+  The best available is min_top1=0.0, min_margin=0.01 at 86.568% — still
+  escalating more correct rows than wrong ones.
+
+  RECOMMENDATION: DROP the low_confidence trigger entirely rather than ship
+  one that fires indiscriminately. Setting both thresholds to 0.0 disables
+  it and is what is applied below.
+
+============================================================================================================
+FEE WIDENING — BOTH SETTINGS ON BOTH BATCHES (thresholds as fitted on train)
+============================================================================================================
+
+                 batch fee_widening  auto_closed  escalated  auto_coverage_%  auto_precision_%  overall_match_%  no_candidate_fired
+         BenchRec eval          OFF        28915       3133           90.224            98.368           91.794                1408
+         BenchRec eval           ON        23799       8249           74.260            98.193           75.181                 165
+synthetic 50,000-group          OFF        42205       7795           84.410            93.996           82.030                3944
+synthetic 50,000-group           ON        39385      10615           78.770            98.431           86.780                   0
+
+  Read the no_candidate_fired column: widening does not merely add false
+  candidates, it disables a trigger by making the pool never empty.
+
+============================================================================================================
+APPLYING THE CHOSEN CONFIGURATION
+============================================================================================================
+
+  low_confidence: min_top1_score=0.0, min_margin=0.0   (TRIGGER DROPPED)
+  >>> These thresholds were fitted on BenchRec_cash_v1.0_train.csv and never on
+  >>> eval or on synthetic data. Everything below is out-of-sample for them.
+  fee widening for BenchRec eval: OFF
+  fee widening for synthetic 50,000-group: ON
+
+============================================================================================================
+FINAL REPORT — BenchRec eval
+============================================================================================================
+
+  records processed              32,048
+  auto-closed                    28,915   (90.224%)
+  escalated                       3,133   (9.776%)
+  rows ingested                  69,171   (A 37,123  B 32,048)
+  wall clock                      51.54 s
+  throughput                      621.8 records/sec
+
+  AUTO-CLOSE PRECISION         98.368%   <- accuracy on the 28,915 rows the system chose to close
+  overall match rate           91.794%   <- if all 32,048 were closed blind
+  overall precision            95.466%
+
+  EXCEPTION BREAKDOWN BY CLASS
+              exception_class  count  pct_of_escalated  would_be_correct  would_be_wrong  correct_%
+         ambiguous_allocation      0             0.000                 0               0        NaN
+               fee_band_match      0             0.000                 0               0        NaN
+         missing_counterparty   1408            44.941               175            1233     12.429
+duplicate_reference_suspected    391            12.480                53             338     13.555
+               incomplete_set   1334            42.579               747             587     55.997
+
+  PER-TRIGGER VERDICTS
+         trigger  escalated  would_be_correct  would_be_wrong  correct_%          verdict
+completion_added       1725               800             925     46.377            mixed
+   fee_band_only          0                 0               0        NaN      never fired
+  low_confidence          0                 0               0        NaN      never fired
+    no_candidate       1408               175            1233     12.429 earning its keep
+
+  audit trail    -> controller_audit_eval.jsonl (32,048 records)
+  exception list -> controller_exceptions_eval.csv (3,133 rows)
+
+============================================================================================================
+FINAL REPORT — synthetic 50,000-group
+============================================================================================================
+
+  records processed              50,000
+  auto-closed                    39,385   (78.770%)
+  escalated                      10,615   (21.230%)
+  rows ingested                 158,534   (A 108,534  B 50,000)
+  wall clock                     131.16 s
+  throughput                      381.2 records/sec
+
+  AUTO-CLOSE PRECISION         98.431%   <- accuracy on the 39,385 rows the system chose to close
+  overall match rate           86.780%   <- if all 50,000 were closed blind
+  overall precision            86.780%
+
+  EXCEPTION BREAKDOWN BY CLASS
+              exception_class  count  pct_of_escalated  would_be_correct  would_be_wrong  correct_%
+         ambiguous_allocation      0             0.000                 0               0        NaN
+               fee_band_match   5681            53.519              3459            2222     60.887
+         missing_counterparty      0             0.000                 0               0        NaN
+duplicate_reference_suspected   2974            28.017                57            2917      1.917
+               incomplete_set   1960            18.464              1107             853     56.480
+
+  PER-TRIGGER VERDICTS
+         trigger  escalated  would_be_correct  would_be_wrong  correct_%          verdict
+completion_added       5406              1165            4241     21.550            mixed
+   fee_band_only       5825              3459            2366     59.382 COSTING COVERAGE
+  low_confidence          0                 0               0        NaN      never fired
+    no_candidate          0                 0               0        NaN      never fired
+
+  audit trail    -> controller_audit_synth.jsonl (50,000 records)
+  exception list -> controller_exceptions_synth.csv (10,615 rows)
