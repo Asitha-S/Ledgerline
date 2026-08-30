@@ -722,3 +722,37 @@ footer { border-top: 2px solid var(--ink); padding: 34px 0 80px; }
                   box-shadow: none; }
 .tour-btn.ghost:hover { border-color: var(--ink); color: var(--ink); transform: none; }
 @media (max-width: 620px) { .tour-card { width: calc(100vw - 32px); } }
+
+/* =====================================================================
+   REFERENCE COMPARISON — figures read from score.log via the export
+   ===================================================================== */
+.refbox { margin-top: 26px; border: 2px solid var(--ink); border-radius: 20px;
+          background: var(--cream2); box-shadow: var(--hard); padding: 22px 26px 20px; }
+.ref-lab { font-family: var(--body); font-size: 10px; font-weight: 700;
+           letter-spacing: .18em; text-transform: uppercase; color: var(--ink-2); }
+.ref-rows { display: flex; flex-direction: column-reverse; margin-top: 12px; }
+.ref-row { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, minmax(74px, 108px));
+           gap: 14px; align-items: baseline; padding: 11px 0;
+           border-top: 1px solid var(--rule); }
+.ref-row.head { border-top: none; padding-bottom: 4px; font-family: var(--body);
+                font-size: 10px; font-weight: 700; letter-spacing: .16em;
+                text-transform: uppercase; color: var(--ink-2); }
+.ref-row .ref-who { font-size: 14px; color: var(--ink-2); min-width: 0;
+                    overflow-wrap: anywhere; }
+.ref-row.me .ref-who { color: var(--ink); font-weight: 600; }
+.ref-row .ref-fig { font-size: 14px; text-align: right; color: var(--ink-2); }
+.ref-row.me .ref-fig { font-size: 17px; font-weight: 700; color: var(--ink);
+                       letter-spacing: -.03em; }
+.ref-note { margin-top: 14px; max-width: 82ch; }
+@media (max-width: 760px) {
+  .ref-row { grid-template-columns: minmax(0, 1fr) repeat(3, minmax(58px, 84px)); gap: 8px; }
+  .ref-row .ref-fig, .ref-row.me .ref-fig { font-size: 12.5px; }
+}
+
+/* the treemap is only drawn once every page of the queue has landed */
+.map-wait { display: grid; place-items: center; min-height: 260px; aspect-ratio: 16 / 7;
+            font-family: var(--body); font-size: 11px; font-weight: 700;
+            letter-spacing: .16em; text-transform: uppercase; color: var(--ink-2);
+            background: var(--cream2); }
+.map-wait.dark { aspect-ratio: auto; height: 100%; background: var(--dark);
+                 color: rgba(245,242,234,.5); }

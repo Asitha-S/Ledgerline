@@ -373,8 +373,10 @@ have been right if closed blind. It survives the same criterion that killed `low
 only because it is close to the line, not comfortably past it — and unlike `low_confidence`
 its 44% wrong share concentrates 24.20B of caught exposure.
 
-**`queue_synth.json` is 2.11 MB and unpaginated** (2,209,247 bytes); the interface blocks on it
-when switching to the synthetic batch.
+**The interface shows one batch at a time and holds the whole queue in memory.** The queue is
+fetched in pages of 1,000 rows so no single request is large (the synthetic index is 211,923
+bytes against 2,209,247 unpaged), but every page is kept, and the treemap is not drawn until
+all of them have landed.
 
 Eval labels were used for measurement only. No threshold, feature or hyperparameter was
 selected against them.
@@ -451,8 +453,8 @@ above its magnitude bar. Failures name the element and the number that broke.
 `controller_audit_eval.jsonl` (32,048 records), `controller_audit_synth.jsonl` (50,000),
 `controller_exceptions_eval.csv` (3,133), `controller_exceptions_synth.csv` (10,615),
 `exceptions_ranked_eval.csv` (3,133 rows, 83.61B exposure), `exceptions_ranked_synth.csv`
-(10,615 rows, 633.76B), `investigations.jsonl`, and `web/data/` — 3,136 files totalling
-4.68 MB for eval, or 13,754 files if `--synth` is passed.
+(10,615 rows, 633.76B), `investigations.jsonl`, and `web/data/` — 13,767 files totalling
+24.45 MB with `--synth`, or the eval batch alone without it.
 
 Source data and anything derived from it row by row is gitignored; all of it regenerates from
 the commands above. The audit JSONL carries the candidates considered, their scores and amount
@@ -464,4 +466,4 @@ Every number in this README appears in `score.log`, `retrieve.log`, `complete.lo
 or `investigations.jsonl`, with two exceptions, both deliberate. A figure written as a
 difference (−2.300, −50.546, −4.821, and the coverage-for-precision trade in finding 6) is the
 subtraction of two logged numbers, and both operands are printed beside it. File sizes and
-counts (2,209,247 bytes, 13,754 files) are measured off disk.
+counts (211,923 and 2,209,247 bytes) are measured off disk.

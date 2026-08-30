@@ -69,6 +69,12 @@ BATCHES = [
 ]
 
 OUT_ROOT = os.path.join("web", "data")
+
+# The queue is written in pages. A single synthetic queue file is 2.1 MB, which the
+# browser has to fetch whole before it can draw a row; paged, the first fetch is a
+# tenth of that and the rest arrives behind the already-usable table. Rows are ranked
+# by exposure, so page 0 is the part of the queue anyone looks at first.
+QUEUE_PAGE = 1000
 LARGE_FILE_BYTES = 1_000_000      # flag anything a browser would be slow to fetch
 TOL = 1e-6
 
@@ -168,6 +174,44 @@ def throughput_from_ctrl_log(data_dir):
     return out
 
 
+def reference_from_score_log(data_dir):
+    """The third-party prediction file's score, read from score.py's own output.
+
+    Not recomputed here and not typed in: score.log is the record of scoring
+    MatcherByChatGPT_submission.csv against the eval solution, and the interface
+    shows exactly what that run reported. Returns None if the log is absent, in
+    which case the comparison is simply not shown."""
+    p = os.path.join(data_dir, "score.log")
+    if not os.path.exists(p):
+        return None
+    txt = open(p, encoding="utf-8", errors="replace").read()
+    name = re.search(r"SCORE\s+—\s+(\S+)\s+vs\s+(\S+)", txt)
+    blk = re.search(r"\nOVERALL\n(.*?)(?=\n[A-Z][A-Z ]{3,}\n|\Z)", txt, re.S)
+    if not blk:
+        return None
+    b = blk.group(1)
+
+    def num(label, cast=float):
+        m = re.search(re.escape(label) + r"\s+([\d,\.]+)", b)
+        return cast(m.group(1).replace(",", "")) if m else None
+
+    out = {
+        "source_file": name.group(1) if name else "MatcherByChatGPT_submission.csv",
+        "scored_against": name.group(2) if name else None,
+        "total_rows": num("total rows", int),
+        "predicted": num("predicted", int),
+        "correct": num("correct", int),
+        "match_rate_pct": num("match rate"),
+        "match_precision_pct": num("match precision"),
+        "abstention_rate_pct": num("abstention rate"),
+        "provenance": ("A prediction file found alongside the dataset. Not an official "
+                       "published baseline, and it carries no provenance — shown because "
+                       "it is the only other answer set in the folder."),
+        "from": "score.log",
+    }
+    return out if out["match_rate_pct"] is not None else None
+
+
 # ----------------------------------------------------------------------------------
 # Figures — arithmetic over already-decided rows
 # ----------------------------------------------------------------------------------
@@ -177,6 +221,19 @@ def compute_summary(recs, name, throughput, currency="USD"):
     esc = [r for r in recs if not r["_auto"]]
     ok = [r for r in auto if r["_correct"]]
     bad = [r for r in auto if not r["_correct"]]
+
+    # What the batch would have scored with no controller at all: every proposed
+    # answer posted blind. This is the figure the reference file is comparable to,
+    # since that file also has no notion of escalating.
+    #
+    # `predicted` follows score.py's rule exactly: a row counts as abstained only when
+    # the prediction is empty AND the gold label is not. Proposing nothing against a
+    # blank label is an answer, and a correct one — counting it as an abstention put
+    # this 0.5 points out and the consistency gate caught it against ctrl.log.
+    correct_all = [r for r in recs if r["_correct"]]
+    abstained_all = [r for r in recs
+                     if not r.get("answer_keys") and not r.get("_gold_blank")]
+    n_predicted = n - len(abstained_all)
 
     tot_v = sum(r["_exposure_cents"] for r in recs)
     auto_v = sum(r["_exposure_cents"] for r in auto)
@@ -227,6 +284,10 @@ def compute_summary(recs, name, throughput, currency="USD"):
         "wall_clock_sec": (throughput or {}).get("wall_clock_sec"),
         "auto_close_precision_by_rows_pct": round(len(ok) / len(auto) * 100, 4) if auto else None,
         "auto_close_precision_by_value_pct": round(ok_v / auto_v * 100, 4) if auto_v else None,
+        "overall_match_pct": round(len(correct_all) / n * 100, 4) if n else None,
+        "overall_precision_pct": (round(len(correct_all) / n_predicted * 100, 4)
+                                  if n_predicted else None),
+        "overall_abstention_pct": round(len(abstained_all) / n * 100, 4) if n else None,
         "value": {
             "unit": "cents",
             "total_batch": tot_v,
@@ -375,6 +436,24 @@ def cross_check(data_dir, batch, summary, curve, failures):
     auto = df[df["auto_closed"]]
     cmp("row-count precision", summary["auto_close_precision_by_rows_pct"],
         round(auto["correct"].mean() * 100, 4), tol=1e-4)
+    # The blind-close figures are recomputed here from the audit; ctrl.log printed its
+    # own. They must agree, or one of the two is measuring something else.
+    ctrl = os.path.join(data_dir, "ctrl.log")
+    if os.path.exists(ctrl) and summary["overall_match_pct"] is not None:
+        txt = open(ctrl, encoding="utf-8", errors="replace").read()
+        m = re.search(r"FINAL REPORT — " + re.escape(batch["name"]) +
+                      r"\s*\n=+\n(.*?)(?=\n={10,}|\Z)", txt, re.S)
+        if m:
+            blk = m.group(1)
+            om = re.search(r"overall match rate\s+([\d\.]+)%", blk)
+            op = re.search(r"overall precision\s+([\d\.]+)%", blk)
+            if om:
+                cmp("overall match rate vs ctrl.log", summary["overall_match_pct"],
+                    float(om.group(1)), tol=0.001)
+            if op:
+                cmp("overall precision vs ctrl.log", summary["overall_precision_pct"],
+                    float(op.group(1)), tol=0.001)
+
     cmp("value-weighted precision", summary["auto_close_precision_by_value_pct"],
         round(ref["ok"] / ref["auto"] * 100, 4), tol=1e-4)
 
@@ -446,7 +525,11 @@ def _main():
 
     investigations = load_investigations(data_dir)
     throughput = throughput_from_ctrl_log(data_dir)
+    reference = reference_from_score_log(data_dir)
     _log(f"  investigations available: {len(investigations)}")
+    _log(f"  reference comparison from score.log: "
+         + (f"{reference['source_file']} at {reference['match_rate_pct']}% / "
+            f"{reference['match_precision_pct']}%" if reference else "not available"))
     _log(f"  throughput parsed from ctrl.log for: {sorted(throughput) or 'none'}")
     _log()
 
@@ -465,6 +548,10 @@ def _main():
         b_side = load_b_side(data_dir, batch)
         summary = compute_summary(recs, batch["name"], throughput.get(batch["key"]),
                                   batch.get("currency", "USD"))
+        # score.log scores the eval solution; there is no comparable file for a batch
+        # we generated ourselves, so the synthetic summary simply carries none.
+        if batch["key"] == "eval" and reference:
+            summary["reference"] = reference
         curve = compute_curve(recs)
 
         _log(f"  {batch['name']}: {len(recs):,} records, "
@@ -504,10 +591,26 @@ def _main():
                     "triggers": rec.get("triggers") or [],
                     "evidence": one_line_evidence(rec),
                 })
+        # Paged. The index carries page 0 inline, so one small fetch is enough to
+        # draw the top of the queue; the remaining pages are fetched behind it.
+        pages = max(1, -(-len(queue_rows) // QUEUE_PAGE))
+        head = {
+            "batch": batch["name"],
+            "rows": len(queue_rows),
+            "total_exposure_cents": sum(r["exposure_cents"] for r in queue_rows),
+            "page_size": QUEUE_PAGE,
+            "pages": pages,
+            "queue": queue_rows[:QUEUE_PAGE],
+        }
         files.append((f"queue_{batch['key']}.json",
-                      _write(os.path.join(out_root, f"queue_{batch['key']}.json"),
-                             {"batch": batch["name"], "rows": len(queue_rows),
-                              "queue": queue_rows})))
+                      _write(os.path.join(out_root, f"queue_{batch['key']}.json"), head)))
+        for i in range(1, pages):
+            fn = f"queue_{batch['key']}_p{i}.json"
+            files.append((fn, _write(os.path.join(out_root, fn),
+                                     {"page": i,
+                                      "queue": queue_rows[i * QUEUE_PAGE:(i + 1) * QUEUE_PAGE]})))
+        _log(f"    queue: {len(queue_rows):,} rows over {pages} page(s) "
+             f"of {QUEUE_PAGE:,}")
 
         # one detail file per escalated row
         ddir = os.path.join(out_root, "detail", batch["key"])

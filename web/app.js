@@ -35,7 +35,9 @@ const PAL = {
  * the palette across the overview comes from here. Class colours stay where they carry
  * meaning — the treemap and the queue — and are not read into these. */
 const CARD_HUE = [PAL.tangerine, PAL.yellow, PAL.cobalt, PAL.violet, PAL.lime];
-const CHART_ACCENT = PAL.tangerine;
+// The curve belongs to section 04, whose rail chip and accent word are violet.
+// Tangerine is section 03's colour and reads as the queue, which this is not.
+const CHART_ACCENT = PAL.violet;
 
 const CLASS_HUE = {
   missing_counterparty:          PAL.cobalt,
@@ -148,6 +150,50 @@ function useJson(url, onProgress) {
       .catch((e) => live && setState({ data: null, error: e.message }));
     return () => { live = false; };
   }, [url]);
+  return state;
+}
+
+/* The queue arrives in pages.
+ *
+ * A single synthetic queue file is 2.1 MB, and the browser cannot draw a row until all
+ * of it has landed. The export writes an index carrying the first page inline plus the
+ * remaining pages beside it, so the first fetch is ~200 KB and the table is usable
+ * immediately. The rest is fetched behind it and committed in one update rather than
+ * page by page, which would re-run the treemap layout once per page.
+ *
+ * `complete` says whether every row is in hand. Anything that claims to show the whole
+ * queue has to wait for it; anything that shows a prefix of it does not. */
+function useQueue(batch) {
+  const [state, setState] = useState({ data: null, error: null, complete: false });
+  useEffect(() => {
+    let live = true;
+    setState({ data: null, error: null, complete: false });
+    const base = `${DATA}/queue_${batch}`;
+    const grab = (u) => fetch(u).then((r) => {
+      if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+      return r.json();
+    });
+
+    grab(`${base}.json`)
+      .then((head) => {
+        if (!live) return;
+        const pages = head.pages || 1;
+        setState({ data: head, error: null, complete: pages <= 1 });
+        if (pages <= 1) return;
+        return Promise.all(
+          Array.from({ length: pages - 1 }, (_, i) => grab(`${base}_p${i + 1}.json`))
+        ).then((rest) => {
+          if (!live) return;
+          const all = head.queue.slice();
+          rest.sort((a, b) => a.page - b.page).forEach((p) => {
+            for (const row of p.queue) all.push(row);
+          });
+          setState({ data: { ...head, queue: all }, error: null, complete: true });
+        });
+      })
+      .catch((e) => live && setState({ data: null, error: e.message, complete: false }));
+    return () => { live = false; };
+  }, [batch]);
   return state;
 }
 
@@ -513,7 +559,7 @@ function Treemap({ queue, W = 1600, H = 720, fit = "xMidYMid meet", cells: given
     </svg>`;
 }
 
-function Overview({ summary, queue }) {
+function Overview({ summary, queue, complete }) {
   const [ref, seen] = useReveal();
   const v = summary.value;
   const top = (queue.queue || [])[0];
@@ -533,7 +579,11 @@ function Overview({ summary, queue }) {
         </p>
 
         <div class="stage">
-          <div class="treemap-wrap"><${Treemap} queue=${queue.queue} /></div>
+          <div class="treemap-wrap">${complete
+            ? html`<${Treemap} queue=${queue.queue} />`
+            : html`<div class="map-wait">${
+                `Loading all ${int(queue.rows)} escalated transactions…`
+              }</div>`}</div>
 
           <svg class="pointer" style=${{ inset: 0, width: "100%", height: "100%" }}
                viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
@@ -688,6 +738,36 @@ function Summary({ s }) {
           </div>
         </div>
 
+        ${s.reference ? html`
+          <div class="refbox">
+            <div class="ref-lab">For reference</div>
+            <div class="ref-rows">
+              <div class="ref-row me">
+                <div class="ref-who">This system, every answer posted blind</div>
+                <div class="ref-fig num">${pct(s.overall_match_pct, 4)}</div>
+                <div class="ref-fig num">${pct(s.overall_precision_pct, 4)}</div>
+                <div class="ref-fig num">${pct(s.overall_abstention_pct, 4)}</div>
+              </div>
+              <div class="ref-row">
+                <div class="ref-who mono">${s.reference.source_file}</div>
+                <div class="ref-fig num">${pct(s.reference.match_rate_pct, 4)}</div>
+                <div class="ref-fig num">${pct(s.reference.match_precision_pct, 4)}</div>
+                <div class="ref-fig num">${pct(s.reference.abstention_rate_pct, 4)}</div>
+              </div>
+              <div class="ref-row head">
+                <div class="ref-who"></div>
+                <div class="ref-fig">match rate</div>
+                <div class="ref-fig">precision</div>
+                <div class="ref-fig">abstention</div>
+              </div>
+            </div>
+            <p class="note-sm ref-note">${
+              `${s.reference.provenance} Scored against ` +
+              `${s.reference.scored_against} by score.py; these figures are read from ` +
+              `score.log at export time, not typed in here.`
+            }</p>
+          </div>` : ""}
+
         <div class="grid2 u-mt38">
           <div class="panel" style=${{ padding: "26px 28px 24px" }}>
             <h3 class="eyebrow u-mb10">Exception classes</h3>
@@ -740,7 +820,7 @@ function Summary({ s }) {
 const ROW_H = 52;
 const OVERSCAN = 8;
 
-function Queue({ queue, selected, onSelect }) {
+function Queue({ queue, total, complete, selected, onSelect }) {
   const [q, setQ] = useState("");
   const [cls, setCls] = useState("");
   const [scrollTop, setScrollTop] = useState(0);
@@ -799,7 +879,8 @@ function Queue({ queue, selected, onSelect }) {
             ${classes.map((c) => html`<option key=${c} value=${c}>${c}</option>`)}
           </select>
           <span class="note-sm">${
-            `${int(rows.length)} of ${int(queue.length)} rows` +
+            `${int(rows.length)} of ${int(total === undefined ? queue.length : total)} rows` +
+            (complete === false ? ` (loading the rest)` : ``) +
             ` · ${money(totalExposure)} ${CURRENCY}` +
             ` · ${slice.length} mounted`
           }</span>
@@ -1648,7 +1729,7 @@ const CALLOUT_H = 19;        // its height, generously, as a % of the panel
  * for the first 900ms and then keeps six groups breathing; stepping through the tour
  * against that put the ring nearly half a second behind the click, because both were
  * competing for the same frames. During the tour the map simply sits still. */
-function Landing({ summary, queue, onEnter, calm }) {
+function Landing({ summary, queue, onEnter, calm, complete }) {
   const v = summary.value;
   const cells = useMemo(() => treemapCells(queue.queue, COVER_W, COVER_H), [queue]);
 
@@ -1710,9 +1791,13 @@ function Landing({ summary, queue, onEnter, calm }) {
             `coloured by exception class`
           }</figcaption>
           <div class="cover-map-panel">
-            <${Treemap} cells=${cells} W=${COVER_W} H=${COVER_H}
-                        fit="none" floor=${0.42} highlight=${hi} animate=${!calm} />
-            ${row && place ? html`
+            ${complete
+              ? html`<${Treemap} cells=${cells} W=${COVER_W} H=${COVER_H}
+                                 fit="none" floor=${0.42} highlight=${hi} animate=${!calm} />`
+              : html`<div class="map-wait dark">${
+                  `Loading all ${int(queue.rows)} escalated transactions…`
+                }</div>`}
+            ${complete && row && place ? html`
               <svg class="cover-leader" viewBox="0 0 100 100" preserveAspectRatio="none"
                    aria-hidden="true">
                 <line x1=${place.from[0].toFixed(2)} y1=${place.from[1].toFixed(2)}
@@ -1757,7 +1842,8 @@ function App() {
   const measure = bootPhase === "in" ? onWire : undefined;
 
   const summary = useJson(`${DATA}/summary_${batch}.json`, measure);
-  const queue = useJson(`${DATA}/queue_${batch}.json`, measure);
+  // the queue index is measured by the boot bar through its own byte counter below
+  const queue = useQueue(batch);
   const curve = useJson(`${DATA}/curve_${batch}.json`, measure);
 
   const loaded = !!(summary.data && queue.data && curve.data);
@@ -1857,7 +1943,7 @@ function App() {
    * single child slot leaves the tour at a stable position beside it. */
   const body = view === "landing"
     ? html`<${Landing} summary=${summary.data} queue=${queue.data} onEnter=${enter}
-                       calm=${tour} />`
+                       calm=${tour} complete=${queue.complete} />`
     : html`
       <${Fragment}>
         <${Ticker} summary=${summary.data} queue=${queue.data} />
@@ -1866,9 +1952,11 @@ function App() {
         <${Rail} active=${active} onGo=${go} tourTaken=${tourTaken}
                onTour=${() => setTour(true)} />
         <div class="main">
-        <${Overview} summary=${summary.data} queue=${queue.data} />
+        <${Overview} summary=${summary.data} queue=${queue.data}
+                     complete=${queue.complete} />
         <${Summary} s=${summary.data} />
-        <${Queue} queue=${queue.data.queue} selected=${selected} onSelect=${setSelected} />
+        <${Queue} queue=${queue.data.queue} total=${queue.data.rows}
+                  complete=${queue.complete} selected=${selected} onSelect=${setSelected} />
         <${Curve} curve=${curve.data} />
         <footer>
           <div class="wrap note-sm">

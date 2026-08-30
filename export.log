@@ -7,12 +7,17 @@ EXPORT — static JSON for a front end
   against exposure.py's own implementation. exposure.log is never parsed.
 
   investigations available: 58
+  reference comparison from score.log: MatcherByChatGPT_submission.csv at 62.4501% / 95.2503%
   throughput parsed from ctrl.log for: ['eval', 'synth']
 
-  exporting batches: ['eval']   (pass --synth to include synthetic)
+  exporting batches: ['eval', 'synth']
 
   BenchRec eval: 32,048 records, 3,133 escalated
+    queue: 3,133 rows over 4 page(s) of 1,000
     detail files: 3,133  (30 with an LLM investigation)
+  synthetic 50,000-group: 50,000 records, 10,615 escalated
+    queue: 10,615 rows over 11 page(s) of 1,000
+    detail files: 10,615  (28 with an LLM investigation)
 
 ====================================================================================================
 CONSISTENCY CHECK vs exposure.py
@@ -26,17 +31,35 @@ CONSISTENCY CHECK vs exposure.py
 OUTPUT SIZE
 ====================================================================================================
 
-                       file   bytes    MB
-          summary_eval.json    2183 0.002
-            curve_eval.json     794 0.001
-            queue_eval.json  620635 0.621
-detail/eval/  (3,133 files) 4059779 4.060
+                         file    bytes     MB
+            summary_eval.json     2740  0.003
+              curve_eval.json      794  0.001
+              queue_eval.json   198891  0.199
+           queue_eval_p1.json   201409  0.201
+           queue_eval_p2.json   196496  0.196
+           queue_eval_p3.json    23963  0.024
+  detail/eval/  (3,133 files)  4059779  4.060
+           summary_synth.json     2292  0.002
+             curve_synth.json      800  0.001
+             queue_synth.json   211923  0.212
+          queue_synth_p1.json   211981  0.212
+          queue_synth_p2.json   210055  0.210
+          queue_synth_p3.json   209337  0.209
+          queue_synth_p4.json   206768  0.207
+          queue_synth_p5.json   208041  0.208
+          queue_synth_p6.json   206901  0.207
+          queue_synth_p7.json   207326  0.207
+          queue_synth_p8.json   205329  0.205
+          queue_synth_p9.json   205187  0.205
+         queue_synth_p10.json   126666  0.127
+detail/synth/  (10,615 files) 17549291 17.549
 
-  files written : 3,136
-  total size    : 4.68 MB
+  files written : 13,767
+  total size    : 24.45 MB
 
   No single JSON file reaches 1.0 MB.
 
   Detail files are fetched one at a time by b_id, so their aggregate size
   does not affect page load. Their file COUNT matters for deployment:
     detail/eval/  (3,133 files)          4.06 MB total
+    detail/synth/  (10,615 files)       17.55 MB total
