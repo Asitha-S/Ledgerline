@@ -148,6 +148,23 @@ rank-2 candidate is a genuinely additional gold key 92.52% of the time.
 **+1.8036 points** of overall match rate. A subset-sum solver would have been the wrong tool
 applied to 2.65% of the cases.
 
+**Does it hold on eval?** Mostly answerable, and the part that isn't is worth stating. `matchId`
+is blank on all 69,171 eval rows, so group membership is not given; the A rows of a group can
+only be reconstructed from the keys the label names. Validated against train's `matchId`, that
+reconstruction never loses a row but over-collects on 35.58% of groups — yet the regime label
+survives it, agreeing on **99.22%** of rows. So the split is reportable:
+
+| regime | train (matchId groups) | eval (reconstructed) | difference |
+|---|---|---|---|
+| repeat | 83.18% | 79.09% | −4.09 |
+| neither | 14.17% | 17.82% | +3.65 |
+| partition | 2.65% | 3.09% | +0.44 |
+
+The fraction-of-A-rows distribution is **not** reportable for eval and `findings.py` refuses to
+print it: the extra rows dilute the fraction, moving the 1.0 bucket by 21.97 points on train.
+Recovering it would need `matchId`, or any per-row group identifier, in the eval file. The
+headline claim holds on both splits and does not depend on the reconstruction being exact.
+
 ### 2. Float precision at 6.6 billion
 
 **Assumed.** An amount tolerance of 0.01 means "within one cent", and `abs(a - b) <= 0.01`

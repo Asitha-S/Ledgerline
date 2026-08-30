@@ -59,6 +59,141 @@ A rows with amount == B  6 of 6         (a repeat means all of them)
 target set               ['K1', 'K2', 'K3', 'K4', 'K5', 'K6']
 
 ==========================================================================================
+FINDING: can that regime split be computed on eval too?
+==========================================================================================
+
+WHAT EVAL CARRIES
+  matchId blank on         69,171 of 69,171 rows (100.00%)
+  targetAllocation blank on 69,171 of 69,171 rows — eval labels live in BenchRec_cash_v1.0_solution.csv
+  A_allocation populated on 37,123 of 37,123 A rows, 22,779 distinct keys
+
+  So group membership is NOT given for eval. In train the regime is computed over
+  the A rows sharing a B row's matchId. The only route without matchId is to
+  reconstruct that A set from the keys the label names: take every A row whose
+  A_allocation is in the target set. Whether that is the same set is testable on
+  train, where matchId gives the answer.
+
+VALIDATING THE RECONSTRUCTION ON TRAIN (matchId is the ground truth there)
+  multi-key B rows tested: 6,678
+    reconstructed A set identical to the matchId group: 4,302 (64.42%)
+    over-collected  (picked up A rows from other groups): 2,376 (35.58%)
+    under-collected (missed A rows in the group):         0 (0.00%)
+
+  A key is not private to one group — a target key can also sit on A rows that
+  belong elsewhere, so the reconstruction only ever adds rows, never loses them.
+  What matters is whether those extra rows change the answer.
+
+  regime, matchId group -> reconstructed group:
+       repeat -> repeat     5,544
+      neither -> neither      940
+    partition -> partition    142
+    partition -> repeat        35   <-- changed
+       repeat -> partition     11   <-- changed
+      neither -> repeat         6   <-- changed
+  regime unchanged: 6,626 of 6,678 (99.22%)
+
+  fraction of A rows at B's exact amount — same rows, both groupings (%):
+         matchId groups  reconstructed  error
+    0.0           14.54          14.68   0.14
+    0.1            0.04           1.50   1.46
+    0.2            0.03           1.15   1.12
+    0.3            0.24           0.57   0.33
+    0.4            0.09           0.39   0.30
+    0.5            5.12           5.00  -0.12
+    0.6            0.64           0.87   0.23
+    0.7            2.62           3.80   1.18
+    0.8            2.50           9.01   6.51
+    0.9            3.94          14.76  10.82
+    1.0           70.23          48.26 -21.97
+  largest bucket error: 21.97 points
+
+  VERDICT
+    regime split          — COMPUTABLE on eval; the reconstruction reproduces train's own answer for 99.22% of rows.
+    fraction distribution — NOT COMPUTABLE on eval. The extra A rows dilute the
+      fraction, moving the 1.0 bucket by 21.97 points on train.
+      Reporting it for eval would be reporting an artefact of the reconstruction.
+      What would be needed: matchId, or any per-row group identifier, in the eval
+      file — or an A-side group column in the solution. Neither exists.
+
+==========================================================================================
+FINDING: multi-key regime on eval (groups reconstructed from the labels)
+==========================================================================================
+
+multi-key B rows in eval: 1,779
+  with at least one A row carrying a target key: 1,779 (100.00%)
+  with none (no A row in the file carries any of them): 0
+
+regime, per B row (%):
+regime
+repeat       79.09
+neither      17.82
+partition     3.09
+
+  Carry the validated error across: the reconstruction changed train's answer for
+  0.78% of rows, biased toward calling a partition a repeat
+  (35 of 52 disagreements on train went that way), so eval's repeat share is if
+  anything a slight over-estimate.
+
+  The fraction-of-A-rows distribution is deliberately not reported here. See the
+  verdict above: on train the reconstruction moves it by 21.97 points.
+
+  B SIDE — recoverable from the label?
+    matchIds whose B rows all carry one target set: 51,980 of 51,980 (100.00%)
+    target sets that map to exactly one matchId:    40,813 of 43,690 (93.41%)
+    The first is what makes the label consistent within a group; the second is what
+    grouping eval's B rows by target set actually needs, and it is the weaker of the
+    two. 6.59% of target sets are shared across groups, so the
+    B side of the example below is reconstructed on the same footing as the A side:
+    mostly right, not guaranteed, and it may include rows from another group.
+
+------------------------------------------------------------------------------------------
+WORKED EXAMPLE — eval B_id 43581112882 (repeat regime)
+------------------------------------------------------------------------------------------
+5 A rows, 5 B rows, 5 distinct allocation keys
+  (no matchId in eval: both sides are reconstructed — the A rows are those
+   carrying the label's keys, the B rows are those whose label is this same key
+   set. Either may include a row from another group; see the check above.)
+
+B rows (external statement):
+        B_id B_debitOrCredit  B_amount
+ 43581112882              DR 840311.46
+840304890183              DR 840311.46
+539698351214              DR 840311.46
+825752293088              DR 840311.46
+839660346265              DR 840311.46
+
+A rows (internal ledger):
+        A_id A_debitOrCredit  A_amount key
+551786750288              CR 840311.46  K2
+594577151758              CR 840311.46  K1
+173495543687              CR 840311.46  K3
+244189094128              CR 840311.46  K4
+517040781446              CR 840311.46  K5
+
+B amount                       840,311.46
+sum of all A amounts         4,201,557.30   (a partition would equal B)
+A rows with amount == B  5 of 5         (a repeat means all of them)
+target set               ['K1', 'K2', 'K3', 'K4', 'K5']
+
+==========================================================================================
+TRAIN vs EVAL — multi-key regime side by side
+==========================================================================================
+
+           train (matchId groups)  eval (reconstructed)  difference
+regime                                                             
+repeat                      83.18                 79.09       -4.09
+neither                     14.17                 17.82        3.65
+partition                    2.65                  3.09        0.44
+
+  multi-key B rows      train 6,678   eval 1,779
+  share of the file     train 9.68%   eval 5.55%
+
+  Read the eval column with its measured caveat: the grouping is reconstructed,
+  and on train that reconstruction reproduces the matchId answer 99.22% of the time.
+  The headline claim — multi-key groups repeat rather than partition — holds on
+  both splits, and does not depend on the reconstruction being exact.
+
+==========================================================================================
 Real eval label mix
 ==========================================================================================
 total solution rows 32,048
