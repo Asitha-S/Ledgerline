@@ -23,6 +23,15 @@ const BATCHES = [
   { key: "synth", label: "Synthetic 50k" },
 ];
 
+/* One colour per batch, so which one is loaded is legible without reading a word.
+ * Neither is a class colour inside its own batch — eval's classes are cobalt, green
+ * and violet, and the synthetic batch has no missing_counterparty at all — so the
+ * chrome never borrows a hue that means something else on the same screen. */
+const BATCH_HUE = { eval: "#BFF442", synth: "#2563EB" };
+const hueForBatch = (k) => BATCH_HUE[k] || "#BFF442";
+
+const CURTAIN_MS = 260;      // half the wipe; the swap happens between the two halves
+
 /* ---------------------------------------------------------------- palette */
 
 const PAL = {
@@ -363,14 +372,16 @@ function Ticker({ summary, queue }) {
 }
 
 function TopBar({ summary, batch, setBatch, synthAvailable, onHome }) {
+  const hue = hueForBatch(batch);
+  const fg = readableOn(hue);
   return html`
     <header class="topbar">
       <button class="wordmark" onClick=${onHome} title="Back to the cover">Ledgerline</button>
       <${Clock} />
       <span class="chip on-lime"><span class="dot-pulse"></span>Batch loaded</span>
-      <span class="chip on-cream">
-        ${(summary.batch || "").toUpperCase()} · ${int(summary.records_processed)} records
-      </span>
+      <span class="chip on-batch" style=${{ background: hue, color: fg }}>${
+        `${(summary.batch || "").toUpperCase()} · ${int(summary.records_processed)} records`
+      }</span>
       <span class="bar-spacer"></span>
       <span class="switcher">
         ${BATCHES.map((b) => html`
@@ -378,6 +389,9 @@ function TopBar({ summary, batch, setBatch, synthAvailable, onHome }) {
                   disabled=${b.key === "synth" && !synthAvailable}
                   title=${b.key === "synth" && !synthAvailable
                     ? "Not exported — run: python export.py --synth" : b.label}
+                  style=${batch === b.key
+                    ? { background: hueForBatch(b.key), color: readableOn(hueForBatch(b.key)) }
+                    : {}}
                   onClick=${() => setBatch(b.key)}>${b.label}</button>`)}
       </span>
     </header>`;
@@ -426,15 +440,24 @@ function Rail({ active, onGo, onTour, tourTaken }) {
 
 /* ---------------------------------------------------------------- section head */
 
-function SecHead({ n, kicker, children }) {
+/* `batch` is printed under every section title. Scrolling past any header then says
+ * which batch is on screen, rather than leaving the reader to remember what the top
+ * bar said several screens ago. */
+function SecHead({ n, kicker, batch, children }) {
   return html`
     <div class="sec-head">
       <div class="sec-num">${n}</div>
       <div>
         <div class="sec-kicker">${kicker}</div>
         <h2 class="display sec-title">${children}</h2>
+        ${batch ? html`<div class="sec-batch">${batch}</div>` : ""}
       </div>
     </div>`;
+}
+
+/** "BenchRec eval · 32,048 records", from the loaded summary. */
+function batchLine(s) {
+  return `${s.batch} · ${int(s.records_processed)} records`;
 }
 
 /* ---------------------------------------------------------------- metric cards */
@@ -559,7 +582,7 @@ function Treemap({ queue, W = 1600, H = 720, fit = "xMidYMid meet", cells: given
     </svg>`;
 }
 
-function Overview({ summary, queue, complete }) {
+function Overview({ summary, queue, complete, batchLine }) {
   const [ref, seen] = useReveal();
   const v = summary.value;
   const top = (queue.queue || [])[0];
@@ -569,7 +592,7 @@ function Overview({ summary, queue, complete }) {
   return html`
     <section id="overview" ref=${ref} class=${"reveal" + (seen ? " in" : "")}>
       <div class="wrap">
-        <${SecHead} n="01" kicker="Overview">
+        <${SecHead} n="01" kicker="Overview" batch=${batchLine}>
           Cash reconciliation, reviewed by <span class="acc-tang">exposure</span>.
         <//>
         <p class="lede sec-sub">
@@ -660,7 +683,7 @@ function ClassPill({ name }) {
                                            borderColor: tint(h, .40) }}>${name}</span>`;
 }
 
-function Summary({ s }) {
+function Summary({ s, batchLine }) {
   const [ref, seen] = useReveal();
   const v = s.value;
   const share = (c) => pct((c / v.total_batch) * 100, 2);
@@ -671,7 +694,7 @@ function Summary({ s }) {
   return html`
     <section id="summary" ref=${ref} class=${"reveal" + (seen ? " in" : "")}>
       <div class="wrap">
-        <${SecHead} n="02" kicker="Executive summary">
+        <${SecHead} n="02" kicker="Executive summary" batch=${batchLine}>
           What the controller <span class="acc-violet">closed</span>.
         <//>
         <p class="sec-sub note">
@@ -820,7 +843,7 @@ function Summary({ s }) {
 const ROW_H = 52;
 const OVERSCAN = 8;
 
-function Queue({ queue, total, complete, selected, onSelect }) {
+function Queue({ queue, total, complete, selected, onSelect, batchLine }) {
   const [q, setQ] = useState("");
   const [cls, setCls] = useState("");
   const [scrollTop, setScrollTop] = useState(0);
@@ -862,7 +885,7 @@ function Queue({ queue, total, complete, selected, onSelect }) {
   return html`
     <section id="queue" ref=${ref} class=${"reveal" + (seen ? " in" : "")}>
       <div class="wrap">
-        <${SecHead} n="03" kicker="Exception queue">
+        <${SecHead} n="03" kicker="Exception queue" batch=${batchLine}>
           What it <span class="acc-tang">refused</span> to close.
         <//>
         <p class="sec-sub note">
@@ -937,7 +960,7 @@ function Queue({ queue, total, complete, selected, onSelect }) {
 
 /* ---------------------------------------------------------------- curve */
 
-function Curve({ curve }) {
+function Curve({ curve, batchLine }) {
   const [ref, seen] = useReveal();
   const drawn = seen ? " drawn" : "";
   const W = 900, H = 400, P = { t: 20, r: 24, b: 50, l: 66 };
@@ -957,7 +980,7 @@ function Curve({ curve }) {
   return html`
     <section id="curve" ref=${ref} class=${"reveal" + (seen ? " in" : "")}>
       <div class="wrap">
-        <${SecHead} n="04" kicker="Exposure analysis">
+        <${SecHead} n="04" kicker="Exposure analysis" batch=${batchLine}>
           Where the <span class="acc-violet">money</span> is.
         <//>
         <p class="sec-sub note">
@@ -1534,7 +1557,8 @@ function Tour({ summary, curve, navigate, onClose }) {
             <p class="tour-body">${
               `It closed what it could defend, escalated ${int(summary.escalated)} it could ` +
               `not, and ranked those by the money standing behind them. Every figure on ` +
-              `this page came out of the pipeline and was cross-checked before export.`
+              `this page came out of the pipeline and was cross-checked before export. ` +
+              `The same view runs over a 50,000-row synthetic batch, switchable at top right.`
             }</p>
             <div class="tour-btns">
               <button class="tour-btn" onClick=${() => setStep(0)}>Restart</button>
@@ -1554,6 +1578,20 @@ function Tour({ summary, curve, navigate, onClose }) {
               }</button>
             </div>`}
       </div>
+    </div>`;
+}
+
+/* The wipe that covers a batch switch.
+ *
+ * There was no page transition anywhere in this build before now — rail clicks scroll
+ * and nothing else — so this is a new component rather than a reuse. It exists because
+ * changing batch changes every figure on the page at once, and without it that reads
+ * as numbers quietly updating rather than as a change of context. The swap happens
+ * while the screen is covered, so no panel is ever seen half-updated. */
+function Curtain({ hue, phase, label }) {
+  return html`
+    <div class=${"curtain " + phase} style=${{ background: hue }} aria-hidden="true">
+      <div class="curtain-label" style=${{ color: readableOn(hue) }}>${label}</div>
     </div>`;
 }
 
@@ -1671,7 +1709,9 @@ function useActiveSection(ready) {
       window.removeEventListener("touchstart", release);
     };
   }, [ready]);
-  return [active, go];
+  // `mark` sets the rail without scrolling; the batch switch has already jumped the
+  // page itself and only needs the highlight to agree.
+  return [active, go, setActive];
 }
 
 /* Portrait, to fill the panel beside the copy. preserveAspectRatio="none" keeps the
@@ -1874,7 +1914,7 @@ function App() {
     const t = setTimeout(() => setBootPhase("done"), prefersReducedMotion() ? 0 : BOOT_FADE_MS);
     return () => clearTimeout(t);
   }, [bootPhase]);
-  const [active, go] = useActiveSection(view === "controller" && loaded);
+  const [active, go, markActive] = useActiveSection(view === "controller" && loaded);
 
   /* The tour drives the page: each step says which view it needs and whether the
    * detail drawer should be open, and this is the only thing that acts on that. */
@@ -1906,16 +1946,69 @@ function App() {
     return () => { live = false; };
   }, []);
 
-  // Switching batch replaces every figure on the page; go back to the top so the
-  // reader is not left mid-queue looking at a different dataset.
+  /* Switching batch replaces every figure on the page. The wipe covers the swap so
+   * nothing is seen half-updated, and the page returns to the top of the overview so
+   * the new batch is read from the beginning rather than from wherever the reader
+   * happened to be in the old queue. */
+  const [curtain, setCurtain] = useState(null);
+  const swapTimers = useRef([]);
+
+  const applyBatch = useCallback((k) => {
+    setBatch(k);
+    setSelected(null);
+    if (typeof window !== "undefined") {
+      // "instant" and not scrollTo(0, 0): the stylesheet sets scroll-behavior: smooth
+      window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    }
+    markActive("overview");
+  }, [markActive]);
+
   const switchBatch = useCallback((k) => {
-    setBatch(k); setSelected(null);
-    if (typeof window !== "undefined") window.scrollTo(0, 0);
-  }, []);
+    if (k === batch) return;
+    swapTimers.current.forEach(clearTimeout);
+    swapTimers.current = [];
+    const hue = hueForBatch(k);
+    const label = (BATCHES.find((b) => b.key === k) || {}).label || k;
+    if (prefersReducedMotion()) { applyBatch(k); return; }
+    setCurtain({ hue, label, phase: "in" });
+    swapTimers.current.push(setTimeout(() => {
+      applyBatch(k);
+      // Hold, covered, until the new batch has landed. Wiping away on a fixed timer
+      // showed the loading state for however long the fetch outlasted it.
+      setCurtain({ hue, label, phase: "hold" });
+    }, CURTAIN_MS));
+  }, [batch, applyBatch]);
+
+  useEffect(() => () => swapTimers.current.forEach(clearTimeout), []);
+
+  // Lift once the incoming batch is ready, or after a cap so a stalled fetch cannot
+  // leave the screen covered indefinitely.
+  useEffect(() => {
+    if (!curtain || curtain.phase !== "hold") return;
+    const lift = () => {
+      setCurtain((c) => (c && c.phase === "hold" ? { ...c, phase: "out" } : c));
+      swapTimers.current.push(setTimeout(() => setCurtain(null), CURTAIN_MS));
+    };
+    const t = setTimeout(lift, loaded ? 80 : 2000);
+    return () => clearTimeout(t);
+  }, [curtain, loaded]);
 
   const err = summary.error || queue.error || curve.error;
+
+  /* One tree, several bodies.
+   *
+   * Every one of these used to be its own early `return`, which meant the wipe and the
+   * tour were dropped from the tree the moment the app fell back to a loading state —
+   * and a batch switch does exactly that while the new files are in flight, so the
+   * curtain vanished mid-switch and came back. Whatever the body is, the overlays sit
+   * beside it in a fixed position. */
+  // printed under every section title; computed before the branches, so it has to
+  // tolerate a summary that has not loaded yet
+  const bLine = summary.data ? batchLine(summary.data) : "";
+
+  let body;
   if (err) {
-    return html`
+    body = html`
       <div class="wrap errpage">
         <h1 class="errtitle display">Data not loaded</h1>
         <p class="lede errlede">${err}</p>
@@ -1927,21 +2020,18 @@ function App() {
           then open <code>http://localhost:8000/</code>. If the data directory is missing, regenerate it with <code>python export.py</code>.
         </p>
       </div>`;
-  }
-  if (bootPhase !== "done") {
-    return html`<${Boot} batch=${batch === "synth" ? "synthetic" : "BenchRec eval"}
+  } else if (bootPhase !== "done") {
+    body = html`<${Boot} batch=${batch === "synth" ? "synthetic" : "BenchRec eval"}
                          records=${summary.data ? summary.data.records_processed : 0}
                          pct=${bootPct} out=${bootPhase === "out"} />`;
-  }
-  if (!loaded) {
-    return html`<div class="wrap"><div class="loading">Loading…</div></div>`;
-  }
-
-  /* One tree, two bodies. The tour drives the view from step to step, so it has to
-   * survive that switch — rendered from two places it would unmount and restart at
-   * step one the moment the cover gave way to the controller. Keeping the body in a
-   * single child slot leaves the tour at a stable position beside it. */
-  const body = view === "landing"
+  } else if (!loaded) {
+    // reached on a batch switch too, where the curtain is covering it
+    body = html`<div class="wrap"><div class="loading">Loading…</div></div>`;
+  } else {
+    /* The tour drives the view from step to step, so it has to survive that switch —
+     * rendered from two places it would unmount and restart at step one the moment the
+     * cover gave way to the controller. */
+    body = view === "landing"
     ? html`<${Landing} summary=${summary.data} queue=${queue.data} onEnter=${enter}
                        calm=${tour} complete=${queue.complete} />`
     : html`
@@ -1953,11 +2043,12 @@ function App() {
                onTour=${() => setTour(true)} />
         <div class="main">
         <${Overview} summary=${summary.data} queue=${queue.data}
-                     complete=${queue.complete} />
-        <${Summary} s=${summary.data} />
+                     complete=${queue.complete} batchLine=${bLine} />
+        <${Summary} s=${summary.data} batchLine=${bLine} />
         <${Queue} queue=${queue.data.queue} total=${queue.data.rows}
-                  complete=${queue.complete} selected=${selected} onSelect=${setSelected} />
-        <${Curve} curve=${curve.data} />
+                  complete=${queue.complete} selected=${selected} onSelect=${setSelected}
+                  batchLine=${bLine} />
+        <${Curve} curve=${curve.data} batchLine=${bLine} />
         <footer>
           <div class="wrap note-sm">
             Static review interface. All figures were produced by the Python pipeline and
@@ -1973,6 +2064,7 @@ function App() {
           ? html`<${Detail} bId=${selected} batch=${batch} onClose=${() => setSelected(null)} />`
           : ""}
       <//>`;
+  }
 
   return html`
     <div>
@@ -1980,6 +2072,10 @@ function App() {
       ${tour
         ? html`<${Tour} summary=${summary.data} curve=${curve.data}
                         navigate=${tourNavigate} onClose=${endTour} />`
+        : ""}
+      ${curtain
+        ? html`<${Curtain} hue=${curtain.hue} phase=${curtain.phase}
+                           label=${curtain.label} />`
         : ""}
     </div>`;
 }

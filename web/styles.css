@@ -134,6 +134,9 @@ p { margin: 0; }
         padding: 6px 12px; border: 2px solid var(--ink); border-radius: 999px; }
 .chip.on-lime { background: var(--lime); }
 .chip.on-cream { background: var(--cream); }
+/* the record chip carries the batch's own colour; set inline, since which batch is
+   loaded is a runtime fact */
+.chip.on-batch { border-color: var(--ink); }
 .dot-pulse { position: relative; width: 9px; height: 9px; border-radius: 50%;
              background: var(--ink); flex: none; }
 .dot-pulse::after { content: ""; position: absolute; inset: -4px; border-radius: 50%;
@@ -150,6 +153,7 @@ p { margin: 0; }
                    color: var(--ink); transition: background 120ms var(--ease); }
 .switcher button + button { border-left: 2px solid var(--ink); }
 .switcher button[aria-pressed="true"] { background: var(--ink); color: var(--cream); }
+.switcher button[aria-pressed="true"][style] { font-weight: 700; }
 .switcher button:disabled { opacity: .38; cursor: not-allowed; }
 .switcher button:not(:disabled):hover { background: rgba(19,26,23,.10); }
 
@@ -756,3 +760,28 @@ footer { border-top: 2px solid var(--ink); padding: 34px 0 80px; }
             background: var(--cream2); }
 .map-wait.dark { aspect-ratio: auto; height: 100%; background: var(--dark);
                  color: rgba(245,242,234,.5); }
+
+/* the batch, restated under every section title */
+.sec-batch { font-family: var(--body); font-size: 10px; font-weight: 700;
+             letter-spacing: .18em; text-transform: uppercase; color: var(--ink-2);
+             margin-top: 14px; }
+
+/* =====================================================================
+   BATCH SWITCH — a wipe across the screen in the incoming batch's colour.
+   The swap happens while it is covering, so nothing is seen half-updated.
+   ===================================================================== */
+.curtain { position: fixed; inset: 0; z-index: 250; display: grid; place-items: center;
+           pointer-events: none; will-change: transform; }
+.curtain.in  { animation: wipeIn 260ms var(--ease) both; }
+.curtain.hold { transform: scaleX(1); }
+.curtain.out { animation: wipeOut 260ms var(--ease) both; }
+@keyframes wipeIn  { from { transform: scaleX(0); transform-origin: left }
+                     to   { transform: scaleX(1); transform-origin: left } }
+@keyframes wipeOut { from { transform: scaleX(1); transform-origin: right }
+                     to   { transform: scaleX(0); transform-origin: right } }
+.curtain-label { font-family: var(--disp); font-size: clamp(22px, 3.4vw, 46px);
+                 letter-spacing: -.02em; animation: curtainWord 260ms var(--ease) both; }
+@keyframes curtainWord { from { opacity: 0 } to { opacity: 1 } }
+@media (prefers-reduced-motion: reduce) {
+  .curtain, .curtain-label { animation: none; }
+}
