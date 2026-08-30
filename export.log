@@ -7,6 +7,7 @@ EXPORT — static JSON for a front end
   against exposure.py's own implementation. exposure.log is never parsed.
 
   investigations available: 58
+  regimes from findings.log: train {'repeat': 83.18, 'neither': 14.17, 'partition': 2.65} / eval {'repeat': 79.09, 'neither': 17.82, 'partition': 3.09}
   reference comparison from score.log: MatcherByChatGPT_submission.csv at 62.4501% / 95.2503%
   throughput parsed from ctrl.log for: ['eval', 'synth']
 
@@ -32,7 +33,7 @@ OUTPUT SIZE
 ====================================================================================================
 
                          file    bytes     MB
-            summary_eval.json     2740  0.003
+            summary_eval.json     4104  0.004
               curve_eval.json      794  0.001
               queue_eval.json   198891  0.199
            queue_eval_p1.json   201409  0.201

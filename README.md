@@ -458,7 +458,7 @@ python check.py                       # Playwright layout check at 1440x900, 128
 python check.py --width 1366          # one width
 ```
 
-`check.py` serves `web/`, screenshots the cover, all four sections and the detail panel at each
+`check.py` serves `web/`, screenshots the cover, every section and the detail panel at each
 width into `screenshots/`, and asserts no horizontal overflow, nothing past the viewport edge,
 no text clipped by its own box, no truncated nav labels, and every queue amount fully visible
 above its magnitude bar. Failures name the element and the number that broke.

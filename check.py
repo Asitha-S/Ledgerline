@@ -30,7 +30,7 @@ SHOTS = os.path.join(HERE, "screenshots")
 WIDTHS = [(1440, 900), (1280, 800), (1920, 1080)]
 
 # Views to capture. (name, how to get there)
-SECTIONS = ["overview", "summary", "queue", "curve"]
+SECTIONS = ["overview", "summary", "regimes", "queue", "curve"]
 
 
 # --------------------------------------------------------------------------- server
@@ -137,8 +137,14 @@ NAV_JS = r"""
 () => {
   const out = [];
   const items = [...document.querySelectorAll('.rail a .rlabel')];
-  if (items.length !== 4) {
-    out.push({ what: `expected 4 nav labels, found ${items.length}`, detail: '' });
+  // one nav item per section on the page, whatever that number happens to be
+  const sections = document.querySelectorAll('.main section[id]').length;
+  if (sections && items.length !== sections) {
+    out.push({ what: `${items.length} nav labels for ${sections} sections`, detail: '' });
+    return out;
+  }
+  if (!items.length) {
+    out.push({ what: 'the rail has no labels', detail: '' });
     return out;
   }
   for (const el of items) {
@@ -213,6 +219,7 @@ SKIP = {
                 "queue amounts fully visible above their bars"},
     "overview": {"queue amounts fully visible above their bars"},
     "summary": {"queue amounts fully visible above their bars"},
+    "regimes": {"queue amounts fully visible above their bars"},
     "curve": {"queue amounts fully visible above their bars"},
 }
 
@@ -266,7 +273,7 @@ def check_width(pw, port, width, height, failures, written):
     page.click(".qrow")
     page.wait_for_selector(".drawer .body h3", timeout=20000)
     page.wait_for_timeout(500)
-    written.append(shoot(page, "06-detail", width, height))
+    written.append(shoot(page, f"{len(SECTIONS) + 2:02d}-detail", width, height))
     run_probes(page, "detail", failures, width, height)
 
     for e in errors:

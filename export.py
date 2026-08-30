@@ -212,6 +212,101 @@ def reference_from_score_log(data_dir):
     return out if out["match_rate_pct"] is not None else None
 
 
+def regimes_from_findings_log(data_dir):
+    """The multi-key regime split on both splits, read out of findings.py's output.
+
+    Nothing here is recomputed: findings.py measures the regimes, validates the eval
+    reconstruction against train's matchId groups, and prints the worked example. This
+    lifts those numbers verbatim so the interface can show them. Returns None if the
+    log is absent or does not contain both splits, in which case the section is simply
+    not rendered."""
+    p = os.path.join(data_dir, "findings.log")
+    if not os.path.exists(p):
+        return None
+    txt = open(p, encoding="utf-8", errors="replace").read()
+
+    def split_block(after):
+        """The 'regime, per B row (%)' table that follows a heading."""
+        i = txt.find(after)
+        if i < 0:
+            return None
+        j = txt.find("regime, per B row (%):", i)
+        if j < 0:
+            return None
+        out = {}
+        for line in txt[j:].split("\n")[2:]:
+            m = re.match(r"\s*(repeat|neither|partition)\s+([\d.]+)\s*$", line)
+            if not m:
+                break
+            out[m.group(1)] = float(m.group(2))
+        return out or None
+
+    train = split_block("multi-key groups repeat rather than partition (train)")
+    ev = split_block("multi-key regime on eval (groups reconstructed from the labels)")
+    if not train or not ev:
+        return None
+
+    def num(pattern, cast=float):
+        m = re.search(pattern, txt)
+        return cast(m.group(1).replace(",", "")) if m else None
+
+    # the worked example, parsed out of the fixed-width tables findings.py prints
+    ex = None
+    m = re.search(r"WORKED EXAMPLE — eval B_id (\d+) \(repeat regime\)([\s\S]*?)"
+                  r"target set\s+\[([^\]]*)\]", txt)
+    if m:
+        body = m.group(2)
+
+        def rows(header, cols):
+            k = body.find(header)
+            if k < 0:
+                return []
+            out = []
+            for line in body[k:].split("\n")[2:]:
+                f = line.split()
+                if len(f) < cols:
+                    break
+                out.append(f)
+            return out
+
+        b_rows = [{"b_id": f[0], "dc": f[1], "amount": f[2]}
+                  for f in rows("B rows (external statement):", 3)]
+        a_rows = [{"a_id": f[0], "dc": f[1], "amount": f[2], "key": f[3]}
+                  for f in rows("A rows (internal ledger):", 4)]
+        eq = re.search(r"A rows with amount == B\s+(\d+) of (\d+)", body)
+        ex = {
+            "b_id": m.group(1),
+            "statement_rows": b_rows,
+            "ledger_rows": a_rows,
+            "b_amount": (re.search(r"B amount\s+([\d,\.]+)", body) or [None, None])[1],
+            "sum_of_ledger_amounts":
+                (re.search(r"sum of all A amounts\s+([\d,\.]+)", body) or [None, None])[1],
+            "ledger_rows_at_b_amount": int(eq.group(1)) if eq else None,
+            "ledger_rows_total": int(eq.group(2)) if eq else None,
+            "keys": [k.strip().strip("\'") for k in m.group(3).split(",")],
+        }
+
+    return {
+        "from": "findings.log",
+        "train": train,
+        "eval": ev,
+        "multi_key_rows": {
+            "train": num(r"multi-key B rows in train: ([\d,]+)", int),
+            "eval": num(r"multi-key B rows in eval: ([\d,]+)", int),
+        },
+        "eval_reconstruction": {
+            "regime_agreement_pct": num(r"regime unchanged: [\d,]+ of [\d,]+ \(([\d.]+)%\)"),
+            "over_collected_pct": num(r"over-collected  \(picked up A rows from other "
+                                      r"groups\): [\d,]+ \(([\d.]+)%\)"),
+            "note": ("eval has no matchId, so a group's ledger rows are reconstructed from "
+                     "the keys its label names. Validated against train's matchId groups: "
+                     "the reconstruction never loses a row, over-collects on some, and "
+                     "leaves the regime label unchanged on the share above."),
+        },
+        "worked_example": ex,
+    }
+
+
 # ----------------------------------------------------------------------------------
 # Figures — arithmetic over already-decided rows
 # ----------------------------------------------------------------------------------
@@ -526,7 +621,11 @@ def _main():
     investigations = load_investigations(data_dir)
     throughput = throughput_from_ctrl_log(data_dir)
     reference = reference_from_score_log(data_dir)
+    regimes = regimes_from_findings_log(data_dir)
     _log(f"  investigations available: {len(investigations)}")
+    _log(f"  regimes from findings.log: "
+         + (f"train {regimes['train']} / eval {regimes['eval']}" if regimes
+            else "not available"))
     _log(f"  reference comparison from score.log: "
          + (f"{reference['source_file']} at {reference['match_rate_pct']}% / "
             f"{reference['match_precision_pct']}%" if reference else "not available"))
@@ -552,6 +651,10 @@ def _main():
         # we generated ourselves, so the synthetic summary simply carries none.
         if batch["key"] == "eval" and reference:
             summary["reference"] = reference
+        # The regime finding is about BenchRec's own structure, measured on train and
+        # eval. It says nothing about a batch we generated, so it rides with eval only.
+        if batch["key"] == "eval" and regimes:
+            summary["regimes"] = regimes
         curve = compute_curve(recs)
 
         _log(f"  {batch['name']}: {len(recs):,} records, "

@@ -785,3 +785,58 @@ footer { border-top: 2px solid var(--ink); padding: 34px 0 80px; }
 @media (prefers-reduced-motion: reduce) {
   .curtain, .curtain-label { animation: none; }
 }
+
+/* =====================================================================
+   REGIMES — the multi-key regime split on both dataset splits, as bars.
+   Every figure arrives in summary.regimes, lifted from findings.log.
+   ===================================================================== */
+.regimes { border: 2px solid var(--ink); border-radius: 20px; background: var(--cream2);
+           box-shadow: var(--hard); padding: 22px 26px 18px; }
+.rg-head, .rg-row { display: grid; grid-template-columns: 108px minmax(0,1fr) minmax(0,1fr);
+                    gap: 22px; align-items: center; }
+.rg-head { padding-bottom: 10px; border-bottom: 1px solid var(--rule); }
+.rg-col { font-family: var(--body); font-size: 10px; font-weight: 700; letter-spacing: .16em;
+          text-transform: uppercase; color: var(--ink-2); }
+.rg-row { padding: 15px 0; border-bottom: 1px solid var(--rule); }
+.rg-row:last-child { border-bottom: none; }
+.rg-name { font-family: var(--body); font-size: 11px; font-weight: 700; letter-spacing: .13em;
+           text-transform: uppercase; }
+.rg-cell { display: grid; grid-template-columns: minmax(0,1fr) 78px; gap: 12px;
+           align-items: center; }
+.rg-track { height: 22px; border-radius: 4px; background: rgba(19,26,23,.06); overflow: hidden; }
+.rg-fill { height: 100%; border-radius: 4px; }
+.rg-pct { font-size: 14px; font-weight: 700; text-align: right; letter-spacing: -.02em; }
+.rg-para { margin-top: 24px; max-width: 84ch; }
+.rg-conseq { margin-top: 26px; font-size: 17px; color: var(--ink-2); max-width: 80ch; }
+.rg-conseq strong { color: var(--ink); }
+.rg-caveat { margin-top: 16px; max-width: 88ch; }
+@media (max-width: 860px) {
+  .rg-head, .rg-row { grid-template-columns: 84px minmax(0,1fr); }
+  .rg-head > :last-child, .rg-row > :last-child { grid-column: 2; }
+  .rg-cell { grid-template-columns: minmax(0,1fr) 66px; }
+}
+
+/* the worked example: statement rows beside ledger rows, amounts aligned */
+.wex { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); gap: 22px; }
+.wex-side { border: 2px solid var(--ink); border-radius: 16px; background: var(--cream2);
+            box-shadow: var(--hard-sm); padding: 16px 18px 12px; min-width: 0; }
+.wex-lab { font-family: var(--body); font-size: 10px; font-weight: 700; letter-spacing: .16em;
+           text-transform: uppercase; color: var(--ink-2); margin-bottom: 10px; }
+.wex-row { display: grid; grid-template-columns: minmax(0,1fr) 30px auto 26px; gap: 10px;
+           align-items: baseline; padding: 7px 0; border-top: 1px solid var(--rule); }
+.wex-side .wex-row:nth-of-type(2) { border-top: none; }
+.wex-id { font-size: 11.5px; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; }
+.wex-dc { font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+.wex-amt { font-size: 14px; font-weight: 700; text-align: right; letter-spacing: -.02em;
+           white-space: nowrap; }
+.wex-key { font-family: var(--mono); font-size: 11px; color: var(--ink-2); text-align: right; }
+.wex-sum { margin-top: 18px; display: flex; flex-direction: column; gap: 9px; }
+.wex-sum > div { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.wex-k { font-family: var(--body); font-size: 10px; font-weight: 700; letter-spacing: .16em;
+         text-transform: uppercase; color: var(--ink-2); min-width: 268px; }
+.wex-sum .num { font-size: 16px; font-weight: 700; letter-spacing: -.02em; }
+.wex-note { font-size: 12.5px; color: var(--ink-2); }
+@media (max-width: 860px) {
+  .wex { grid-template-columns: minmax(0,1fr); }
+  .wex-k { min-width: 0; }
+}

@@ -397,12 +397,21 @@ function TopBar({ summary, batch, setBatch, synthAvailable, onHome }) {
     </header>`;
 }
 
+/* Numbered by position. The regime section sits before the queue because it explains
+ * why the queue is built out of ranked candidates rather than solved arithmetically,
+ * so the queue and the curve shift down a number. */
 const NAV = [
   ["overview", "01", "Overview", PAL.lime],
   ["summary",  "02", "Summary",  PAL.yellow],
-  ["queue",    "03", "Queue",    PAL.tangerine],
-  ["curve",    "04", "Exposure", PAL.violet],
+  ["regimes",  "03", "Regimes",  PAL.green],
+  ["queue",    "04", "Queue",    PAL.tangerine],
+  ["curve",    "05", "Exposure", PAL.violet],
 ];
+
+/* One class colour per regime. Nothing about a regime IS an exception class; these are
+ * borrowed so the three bars read as three categories of the same kind. */
+const REGIME_HUE = { repeat: PAL.cobalt, neither: PAL.green, partition: PAL.tangerine };
+const REGIME_ORDER = ["repeat", "neither", "partition"];
 
 /* Drawn, not an HTML entity — htm does not decode entities, so `&rarr;` would
  * render as its own literal text. */
@@ -838,6 +847,130 @@ function Summary({ s, batchLine }) {
     </section>`;
 }
 
+/* ---------------------------------------------------------------- regimes
+ *
+ * Why the matching stack ranks candidates instead of solving for a subset that sums to
+ * the statement amount. Every figure comes from summary.regimes, which export.py lifts
+ * out of findings.log; nothing here is computed in the browser. */
+
+function RegimeBars({ regimes }) {
+  const max = Math.max(...REGIME_ORDER.flatMap(
+    (k) => [regimes.train[k] || 0, regimes.eval[k] || 0]));
+  return html`
+    <div class="regimes">
+      <div class="rg-head">
+        <div></div>
+        <div class="rg-col">${`Train · ${int(regimes.multi_key_rows.train)} rows`}</div>
+        <div class="rg-col">${`Eval · ${int(regimes.multi_key_rows.eval)} rows`}</div>
+      </div>
+      ${REGIME_ORDER.map((k) => {
+        const hue = REGIME_HUE[k];
+        const bar = (v) => html`
+          <div class="rg-cell">
+            <div class="rg-track">
+              <div class="rg-fill" style=${{ width: (v / max * 100).toFixed(2) + "%",
+                                             background: hue }}></div>
+            </div>
+            <div class="rg-pct num">${pct(v, 2)}</div>
+          </div>`;
+        return html`
+          <div class="rg-row" key=${k}>
+            <div class="rg-name" style=${{ color: inkFor(k === "neither" ? "incomplete_set"
+              : k === "partition" ? "fee_band_match" : "missing_counterparty") }}>${k}</div>
+            ${bar(regimes.train[k] || 0)}
+            ${bar(regimes.eval[k] || 0)}
+          </div>`;
+      })}
+    </div>`;
+}
+
+function WorkedExample({ ex }) {
+  if (!ex) return "";
+  return html`
+    <div class="wex">
+      <div class="wex-side">
+        <div class="wex-lab">${`Statement rows · ${ex.statement_rows.length}`}</div>
+        ${ex.statement_rows.map((r) => html`
+          <div class="wex-row" key=${r.b_id}>
+            <span class="wex-id mono">${r.b_id}</span>
+            <span class="wex-dc">${r.dc}</span>
+            <span class="wex-amt num">${r.amount}</span>
+          </div>`)}
+      </div>
+      <div class="wex-side">
+        <div class="wex-lab">${`Ledger rows · ${ex.ledger_rows.length}`}</div>
+        ${ex.ledger_rows.map((r) => html`
+          <div class="wex-row" key=${r.a_id}>
+            <span class="wex-id mono">${r.a_id}</span>
+            <span class="wex-dc">${r.dc}</span>
+            <span class="wex-amt num">${r.amount}</span>
+            <span class="wex-key">${r.key}</span>
+          </div>`)}
+      </div>
+    </div>`;
+}
+
+function Regimes({ regimes, batchLine }) {
+  const [ref, seen] = useReveal();
+  if (!regimes) return "";
+  const ex = regimes.worked_example;
+  const rec = regimes.eval_reconstruction || {};
+  return html`
+    <section id="regimes" ref=${ref} class=${"reveal" + (seen ? " in" : "")}>
+      <div class="wrap">
+        <${SecHead} n="03" kicker="Method" batch=${batchLine}>
+          Why there is no <span class="acc-tang">subset-sum</span> solver here.
+        <//>
+        <p class="sec-sub note">${
+          `The multi-key label — one statement row answered by several ledger keys — is ` +
+          `where an arithmetic solver would go. Which regime those groups are actually in ` +
+          `decides whether that solver would work at all, so it was measured first.`
+        }</p>
+
+        <${RegimeBars} regimes=${regimes} />
+
+        <p class="note rg-para">${
+          `One-to-many reconciliation is commonly formulated as subset-sum: find the ledger ` +
+          `rows whose amounts add to the statement amount. On this data that describes ` +
+          `under 4% of multi-key cases — ${pct(regimes.train.partition, 2)} on train and ` +
+          `${pct(regimes.eval.partition, 2)} on eval. In the dominant case several ledger ` +
+          `rows already carry the statement's exact amount, so arithmetic cannot ` +
+          `distinguish them at all.`
+        }</p>
+
+        ${ex ? html`
+          <h3 class="eyebrow u-head34">${`Worked example — eval B_id ${ex.b_id}`}</h3>
+          <${WorkedExample} ex=${ex} />
+          <div class="wex-sum">
+            <div><span class="wex-k">Statement amount</span>
+                 <span class="num">${ex.b_amount}</span></div>
+            <div><span class="wex-k">Sum of all ledger amounts</span>
+                 <span class="num">${ex.sum_of_ledger_amounts}</span>
+                 <span class="wex-note">a partition would equal the statement</span></div>
+            <div><span class="wex-k">Ledger rows at the statement amount</span>
+                 <span class="num">${
+                   `${ex.ledger_rows_at_b_amount} of ${ex.ledger_rows_total}`
+                 }</span>
+                 <span class="wex-note">a repeat means all of them</span></div>
+          </div>` : ""}
+
+        <p class="rg-conseq">
+          The consequence: <strong>retrieval and ranking over candidates, not an arithmetic
+          solver.</strong>
+        </p>
+
+        <p class="note-sm rg-caveat">${
+          `Partition is a real regime, and Razorpay's own partial settlements are an example ` +
+          `of it. The claim here is not that subset-sum is the wrong tool everywhere — it is ` +
+          `that which regime you are in should be measured before the algorithm is chosen. ` +
+          `Eval has no matchId, so its groups are reconstructed from the keys each label ` +
+          `names; validated against train's matchId groups that reconstruction leaves the ` +
+          `regime unchanged on ${pct(rec.regime_agreement_pct, 2)} of rows.`
+        }</p>
+      </div>
+    </section>`;
+}
+
 /* ---------------------------------------------------------------- queue */
 
 const ROW_H = 52;
@@ -885,7 +1018,7 @@ function Queue({ queue, total, complete, selected, onSelect, batchLine }) {
   return html`
     <section id="queue" ref=${ref} class=${"reveal" + (seen ? " in" : "")}>
       <div class="wrap">
-        <${SecHead} n="03" kicker="Exception queue" batch=${batchLine}>
+        <${SecHead} n="04" kicker="Exception queue" batch=${batchLine}>
           What it <span class="acc-tang">refused</span> to close.
         <//>
         <p class="sec-sub note">
@@ -980,7 +1113,7 @@ function Curve({ curve, batchLine }) {
   return html`
     <section id="curve" ref=${ref} class=${"reveal" + (seen ? " in" : "")}>
       <div class="wrap">
-        <${SecHead} n="04" kicker="Exposure analysis" batch=${batchLine}>
+        <${SecHead} n="05" kicker="Exposure analysis" batch=${batchLine}>
           Where the <span class="acc-violet">money</span> is.
         <//>
         <p class="sec-sub note">
@@ -1816,7 +1949,10 @@ function Landing({ summary, queue, onEnter, calm, complete }) {
                          sub=${moneyShort(v.in_exception_queue) + " " + CURRENCY + " at risk"} />
           </div>
           <p class="cover-sections">
-            <span class="cs-lab">Four sections follow</span>
+            <span class="cs-lab">${
+              `${["", "One", "Two", "Three", "Four", "Five", "Six"][NAV.length] || NAV.length} ` +
+              `sections follow`
+            }</span>
             ${NAV.map(([id, n, label, hue]) => html`
               <span class="cs-item" key=${id}>
                 <span class="cs-n">${n}</span>${" " + label}
@@ -2045,6 +2181,7 @@ function App() {
         <${Overview} summary=${summary.data} queue=${queue.data}
                      complete=${queue.complete} batchLine=${bLine} />
         <${Summary} s=${summary.data} batchLine=${bLine} />
+        <${Regimes} regimes=${summary.data.regimes} batchLine=${bLine} />
         <${Queue} queue=${queue.data.queue} total=${queue.data.rows}
                   complete=${queue.complete} selected=${selected} onSelect=${setSelected}
                   batchLine=${bLine} />
