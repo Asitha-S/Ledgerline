@@ -14,7 +14,7 @@ CONTROLLER — agent layer over the existing matching stack
   CHANGE 2: low_confidence thresholds are FITTED ON TRAIN ONLY.
 
 Ranking BenchRec train and fitting the completion classifier (train only).
-  19,339 candidate decisions, 8,905 positive (46.05%), fitted in 113.4s
+  19,339 candidate decisions, 8,905 positive (46.05%), fitted in 110.9s
 
 ============================================================================================================
 LOW_CONFIDENCE THRESHOLD FIT — BenchRec TRAIN ONLY
@@ -119,8 +119,8 @@ FINAL REPORT — BenchRec eval
   auto-closed                    28,915   (90.224%)
   escalated                       3,133   (9.776%)
   rows ingested                  69,171   (A 37,123  B 32,048)
-  wall clock                      53.91 s
-  throughput                      594.4 records/sec
+  wall clock                      51.54 s
+  throughput                      621.8 records/sec
 
   AUTO-CLOSE PRECISION         98.368%   <- accuracy on the 28,915 rows the system chose to close
   overall match rate           91.794%   <- if all 32,048 were closed blind
@@ -152,8 +152,8 @@ FINAL REPORT — synthetic 50,000-group
   auto-closed                    39,385   (78.770%)
   escalated                      10,615   (21.230%)
   rows ingested                 158,534   (A 108,534  B 50,000)
-  wall clock                     215.17 s
-  throughput                      232.4 records/sec
+  wall clock                     131.16 s
+  throughput                      381.2 records/sec
 
   AUTO-CLOSE PRECISION         98.431%   <- accuracy on the 39,385 rows the system chose to close
   overall match rate           86.780%   <- if all 50,000 were closed blind

@@ -1,0 +1,588 @@
+"""
+export.py — convert existing outputs into static JSON for a front end.
+
+This is a serialiser. It makes no decisions, calls no model, and contains no analysis
+logic beyond arithmetic over figures already produced: counts, sums, percentages and
+the cumulative curve. Every decision, answer, trigger and probability is copied
+verbatim from the controller's audit records.
+
+INPUTS
+    controller_audit_{eval,synth}.jsonl   decisions, candidates, triggers, added keys
+    exceptions_ranked_{eval,synth}.csv    the exposure-ranked queue
+    investigations.jsonl                  LLM explanations + grounding results
+    {BenchRec_cash_v1.0,synth}_solution.csv   labels, for correctness only
+    ctrl.log                              throughput only (a runtime measurement that
+                                          cannot be derived from an audit record)
+
+OUTPUTS  (web/data/)
+    summary_{eval,synth}.json
+    queue_{eval,synth}.json
+    curve_{eval,synth}.json
+    detail/{eval,synth}/<b_id>.json       one per escalated row
+
+CONSISTENCY GUARANTEE
+    Summary and curve figures are computed here from the audit files directly —
+    exposure.log is never parsed. They are then cross-checked against exposure.py's own
+    implementation, invoked in-process. Two independent code paths reading the same
+    inputs must agree; any disagreement aborts the export rather than shipping a number
+    that contradicts the analysis.
+
+Run:  python export.py [data_dir]
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import io
+import json
+import os
+import re
+import shutil
+import sys
+
+import numpy as np
+import pandas as pd
+
+import controller as CTL          # trigger / exception-class vocabulary
+import exposure as EXP            # cross-check reference implementation
+from score import _parse_alloc
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
+BATCHES = [
+    {"key": "eval", "name": "BenchRec eval",
+     "audit": "controller_audit_eval.jsonl",
+     "ranked": "exceptions_ranked_eval.csv",
+     "solution": "BenchRec_cash_v1.0_solution.csv",
+     "transactions": "BenchRec_cash_v1.0_eval.csv",
+     "currency": "USD"},
+    {"key": "synth", "name": "synthetic 50,000-group",
+     "audit": "controller_audit_synth.jsonl",
+     "ranked": "exceptions_ranked_synth.csv",
+     "solution": "synth_solution.csv",
+     "transactions": "synth_transactions.csv",
+     "currency": "USD"},
+]
+
+OUT_ROOT = os.path.join("web", "data")
+LARGE_FILE_BYTES = 1_000_000      # flag anything a browser would be slow to fetch
+TOL = 1e-6
+
+
+def _log(m=""):
+    print(m, flush=True)
+
+
+def _rule(c="-", n=100):
+    _log(c * n)
+
+
+# ----------------------------------------------------------------------------------
+# Load — independent of exposure.py on purpose, so the cross-check means something
+# ----------------------------------------------------------------------------------
+def load_audit(data_dir, batch):
+    sol = pd.read_csv(os.path.join(data_dir, batch["solution"]), dtype=str,
+                      keep_default_na=False)
+    labels = {str(b): _parse_alloc(t)
+              for b, t in zip(sol["B_id"], sol["targetAllocation"])}
+
+    recs = []
+    with open(os.path.join(data_dir, batch["audit"]), encoding="utf-8") as fh:
+        for line in fh:
+            d = json.loads(line)
+            bid = str(d["b_id"])
+            answer = set(d.get("answer_keys") or [])
+            d["_b_id"] = bid
+            d["_exposure_cents"] = abs(int(d["b_amount_cents"]))
+            d["_auto"] = d["decision"] == "auto_close"
+            d["_correct"] = answer == labels.get(bid, set())
+            d["_gold_blank"] = len(labels.get(bid, set())) == 0
+            recs.append(d)
+    return recs
+
+
+def load_b_side(data_dir, batch):
+    """Value/import dates and reference fields for B rows. A join, not a computation —
+    the audit record carries the amount but not the dates."""
+    p = os.path.join(data_dir, batch.get("transactions", ""))
+    if not p or not os.path.exists(p):
+        return {}
+    df = pd.read_csv(p, dtype=str, keep_default_na=False,
+                     usecols=["B_transactionType", "B_id", "B_valueDate", "B_importDate",
+                              "B_currencyCode", "B_debitOrCredit",
+                              "B_transactionReferences", "B_transactionAttributes"])
+    df = df[df["B_transactionType"] == "B"]
+    return {r["B_id"]: r for r in df.to_dict("records")}
+
+
+def load_investigations(data_dir):
+    p = os.path.join(data_dir, "investigations.jsonl")
+    out = {}
+    if not os.path.exists(p):
+        return out
+    with open(p, encoding="utf-8") as fh:
+        for line in fh:
+            d = json.loads(line)
+            if "error" in d:
+                continue
+            out[str(d["b_id"])] = {
+                "explanation": d.get("explanation"),
+                "recommended_action": d.get("recommended_action"),
+                "information_needed": d.get("information_needed"),
+                "grounded": d.get("groundedness", {}).get("grounded"),
+                "ungrounded_tokens": d.get("groundedness", {}).get("ungrounded_tokens", []),
+                "no_match_proposed": d.get("no_match_proposed_check", {}).get("clean"),
+                "provider": d.get("provider"),
+                "model": d.get("model"),
+            }
+    return out
+
+
+def throughput_from_ctrl_log(data_dir):
+    """Throughput is a runtime measurement; it cannot be recovered from an audit record.
+    Read from the controller's own run log, or null if unavailable. (exposure.log is
+    never read — that prohibition is about the analysis figures, which are recomputed.)"""
+    p = os.path.join(data_dir, "ctrl.log")
+    if not os.path.exists(p):
+        return {}
+    txt = open(p, encoding="utf-8", errors="replace").read()
+    out = {}
+    for name, key in (("BenchRec eval", "eval"), ("synthetic 50,000-group", "synth")):
+        # The heading is followed by its own rule line, so skip that before capturing;
+        # anchoring on the first "====" after the title matches an empty block.
+        m = re.search(r"FINAL REPORT — " + re.escape(name) + r"\s*\n=+\n(.*?)(?=\n={10,}|\Z)",
+                      txt, re.S)
+        if not m:
+            continue
+        blk = m.group(1)
+        t = re.search(r"throughput\s+([\d,\.]+)\s+records/sec", blk)
+        w = re.search(r"wall clock\s+([\d\.]+)\s*s", blk)
+        out[key] = {
+            "records_per_sec": float(t.group(1).replace(",", "")) if t else None,
+            "wall_clock_sec": float(w.group(1)) if w else None,
+        }
+    return out
+
+
+# ----------------------------------------------------------------------------------
+# Figures — arithmetic over already-decided rows
+# ----------------------------------------------------------------------------------
+def compute_summary(recs, name, throughput, currency="USD"):
+    n = len(recs)
+    auto = [r for r in recs if r["_auto"]]
+    esc = [r for r in recs if not r["_auto"]]
+    ok = [r for r in auto if r["_correct"]]
+    bad = [r for r in auto if not r["_correct"]]
+
+    tot_v = sum(r["_exposure_cents"] for r in recs)
+    auto_v = sum(r["_exposure_cents"] for r in auto)
+    ok_v = sum(r["_exposure_cents"] for r in ok)
+    bad_v = sum(r["_exposure_cents"] for r in bad)
+    esc_v = sum(r["_exposure_cents"] for r in esc)
+
+    classes = []
+    for cls in sorted({r["exception_class"] or "" for r in esc}):
+        g = [r for r in esc if (r["exception_class"] or "") == cls]
+        v = sum(r["_exposure_cents"] for r in g)
+        classes.append({
+            "exception_class": cls,
+            "rows": len(g),
+            "exposure_cents": v,
+            "pct_of_queue_rows": round(len(g) / len(esc) * 100, 4) if esc else 0.0,
+            "pct_of_queue_value": round(v / esc_v * 100, 4) if esc_v else 0.0,
+            "would_be_correct_cents": sum(r["_exposure_cents"] for r in g if r["_correct"]),
+            "would_be_wrong_cents": sum(r["_exposure_cents"] for r in g if not r["_correct"]),
+        })
+
+    triggers = []
+    for t in CTL.TRIGGERS:
+        g = [r for r in esc if t in (r.get("triggers") or [])]
+        v = sum(r["_exposure_cents"] for r in g)
+        c = sum(1 for r in g if r["_correct"])
+        pct = (c / len(g) * 100) if g else None
+        # Verdict thresholds mirror controller.py's PER-TRIGGER VERDICTS table exactly.
+        verdict = ("never fired" if not g else
+                   "COSTING COVERAGE" if pct >= 50 else
+                   "earning its keep" if pct <= 20 else "mixed")
+        triggers.append({
+            "trigger": t, "rows": len(g), "exposure_cents": v,
+            "would_be_correct": c, "would_be_wrong": len(g) - c,
+            "correct_pct": round(pct, 4) if pct is not None else None,
+            "verdict": verdict,
+        })
+
+    return {
+        "batch": name,
+        "currency": currency,
+        "records_processed": n,
+        "auto_closed": len(auto),
+        "escalated": len(esc),
+        "auto_close_rate_pct": round(len(auto) / n * 100, 4),
+        "escalation_rate_pct": round(len(esc) / n * 100, 4),
+        "throughput_records_per_sec": (throughput or {}).get("records_per_sec"),
+        "wall_clock_sec": (throughput or {}).get("wall_clock_sec"),
+        "auto_close_precision_by_rows_pct": round(len(ok) / len(auto) * 100, 4) if auto else None,
+        "auto_close_precision_by_value_pct": round(ok_v / auto_v * 100, 4) if auto_v else None,
+        "value": {
+            "unit": "cents",
+            "total_batch": tot_v,
+            "auto_closed_total": auto_v,
+            "auto_closed_correct": ok_v,
+            "auto_closed_incorrect": bad_v,
+            "in_exception_queue": esc_v,
+        },
+        "exposure_definition": {
+            "wrongly_auto_closed": "full absolute B amount",
+            "escalated": "full absolute B amount at risk pending review, including rows "
+                         "whose correct answer is blank",
+            "correctly_auto_closed": "zero exposure; counted only in the precision "
+                                     "denominator",
+            "note": "escalated exposure is workload; wrongly auto-closed exposure is "
+                    "value already posted unchecked. They are not additive.",
+        },
+        "exception_classes": classes,
+        "triggers": triggers,
+    }
+
+
+def compute_curve(recs, seeds=None, deciles=None):
+    seeds = EXP.RANDOM_SEEDS if seeds is None else seeds
+    deciles = EXP.DECILES if deciles is None else deciles
+    esc = sorted((r["_exposure_cents"] for r in recs
+                  if not r["_auto"]), reverse=True)
+    if not esc:
+        return {"points": [], "total_exposure_cents": 0, "queue_rows": 0}
+    v = np.array(esc, dtype=np.int64)
+    total = int(v.sum())
+    n = len(v)
+    ranked_cum = np.cumsum(v) / total
+
+    rng = np.random.default_rng(0)
+    rand = np.vstack([np.cumsum(v[rng.permutation(n)]) / total for _ in range(seeds)])
+
+    pts = []
+    for pct in deciles:
+        k = max(1, int(round(n * pct / 100)))
+        pts.append({
+            "review_top_pct": pct,
+            "rows_reviewed": k,
+            "ranked_pct": round(float(ranked_cum[k - 1]) * 100, 4),
+            "random_pct": round(float(rand[:, k - 1].mean()) * 100, 4),
+            "random_sd": round(float(rand[:, k - 1].std()) * 100, 4),
+        })
+    return {"queue_rows": n, "total_exposure_cents": total,
+            "random_seeds": seeds, "points": pts}
+
+
+def one_line_evidence(rec):
+    c = rec.get("candidates") or []
+    bits = [f"{len(c)} cand"]
+    if rec.get("top1_score") is not None:
+        bits.append(f"top1={rec['top1_score']:.4f}")
+    if rec.get("margin") is not None:
+        bits.append(f"margin={rec['margin']:.4f}")
+    bits.append("exact" if rec.get("exact_amount_top1") else "no-exact-amount")
+    if rec.get("duplicate_reference_among_candidates"):
+        bits.append("dup-ref")
+    ak = rec.get("added_keys") or []
+    if ak:
+        ps = [a.get("probability") for a in ak if isinstance(a, dict)
+              and a.get("probability") is not None]
+        bits.append(f"+{len(ak)} added" + (f" (p max {max(ps):.3f})" if ps else ""))
+    if not c:
+        bits.append("empty pool")
+    return "; ".join(bits)
+
+
+def build_detail(rec, investigation, b_row=None, currency="USD"):
+    ak = []
+    for a in rec.get("added_keys") or []:
+        if isinstance(a, dict):
+            ak.append({"allocation_key": a.get("allocation_key"),
+                       "probability": a.get("probability")})
+        else:
+            ak.append({"allocation_key": a, "probability": None})
+    return {
+        "b_id": rec["_b_id"],
+        "batch": rec.get("batch"),
+        "decision": rec["decision"],
+        "exception_class": rec.get("exception_class"),
+        "triggers": rec.get("triggers") or [],
+        "transaction": {
+            "amount_cents": rec["b_amount_cents"],
+            "exposure_cents": rec["_exposure_cents"],
+            "currency": (b_row or {}).get("B_currencyCode") or currency,
+            "debit_or_credit": (b_row or {}).get("B_debitOrCredit"),
+            "value_date": (b_row or {}).get("B_valueDate"),
+            "import_date": (b_row or {}).get("B_importDate"),
+            "references": (b_row or {}).get("B_transactionReferences"),
+            "attributes": (b_row or {}).get("B_transactionAttributes"),
+        },
+        "candidate_pool_size": rec.get("pool_size"),
+        "top1_a_id": rec.get("top1_a_id"),
+        "top1_score": rec.get("top1_score"),
+        "margin": rec.get("margin"),
+        "exact_amount_top1": rec.get("exact_amount_top1"),
+        "duplicate_reference_among_candidates": rec.get("duplicate_reference_among_candidates"),
+        "candidates": [
+            {"rank": c.get("rank"), "a_id": c.get("a_id"),
+             "amount_cents": c.get("amount_cents"),
+             "delta_from_b_cents": c.get("amount_delta_cents"),
+             "similarity_score": c.get("score"),
+             "exact_amount": c.get("exact_amount")}
+            for c in (rec.get("candidates") or [])
+        ],
+        "added_keys": ak,
+        "answer_keys": rec.get("answer_keys") or [],
+        "investigation": investigation,
+    }
+
+
+# ----------------------------------------------------------------------------------
+# Cross-check against exposure.py
+# ----------------------------------------------------------------------------------
+def cross_check(data_dir, batch, summary, curve, failures):
+    """Run exposure.py's own implementation in-process and require agreement."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        df = EXP.load_batch(data_dir, batch["audit"], batch["solution"])
+        ref = EXP.headline(df, batch["name"])
+
+    def cmp(label, mine, theirs, tol=0):
+        if theirs is None or mine is None:
+            failures.append(f"{batch['key']}: {label} missing (mine={mine}, "
+                            f"exposure={theirs})")
+            return
+        if abs(float(mine) - float(theirs)) > tol:
+            failures.append(f"{batch['key']}: {label} MISMATCH "
+                            f"mine={mine} exposure.py={theirs}")
+
+    v = summary["value"]
+    cmp("total batch value", v["total_batch"], ref["tot"])
+    cmp("auto-closed value", v["auto_closed_total"], ref["auto"])
+    cmp("value auto-closed correctly", v["auto_closed_correct"], ref["ok"])
+    cmp("value auto-closed incorrectly", v["auto_closed_incorrect"], ref["bad"])
+    cmp("queue value", v["in_exception_queue"], ref["esc"])
+
+    # row counts and precisions, straight off exposure's own frame
+    cmp("records processed", summary["records_processed"], len(df))
+    cmp("auto-closed rows", summary["auto_closed"], int(df["auto_closed"].sum()))
+    cmp("escalated rows", summary["escalated"], int((~df["auto_closed"]).sum()))
+    auto = df[df["auto_closed"]]
+    cmp("row-count precision", summary["auto_close_precision_by_rows_pct"],
+        round(auto["correct"].mean() * 100, 4), tol=1e-4)
+    cmp("value-weighted precision", summary["auto_close_precision_by_value_pct"],
+        round(ref["ok"] / ref["auto"] * 100, 4), tol=1e-4)
+
+    # curve, using exposure's ordering and constants
+    esc_v = df[~df["auto_closed"]].sort_values(
+        "exposure_cents", ascending=False)["exposure_cents"].to_numpy()
+    if len(esc_v):
+        total = esc_v.sum()
+        ranked_cum = np.cumsum(esc_v) / total
+        rng = np.random.default_rng(0)
+        rnd = np.vstack([np.cumsum(esc_v[rng.permutation(len(esc_v))]) / total
+                         for _ in range(EXP.RANDOM_SEEDS)])
+        for pt in curve["points"]:
+            k = max(1, int(round(len(esc_v) * pt["review_top_pct"] / 100)))
+            cmp(f"curve ranked @{pt['review_top_pct']}%", pt["ranked_pct"],
+                round(float(ranked_cum[k - 1]) * 100, 4), tol=1e-4)
+            cmp(f"curve random @{pt['review_top_pct']}%", pt["random_pct"],
+                round(float(rnd[:, k - 1].mean()) * 100, 4), tol=1e-4)
+
+    # queue value by class, against exposure's frame
+    escdf = df[~df["auto_closed"]]
+    for c in summary["exception_classes"]:
+        g = escdf[escdf["exception_class"] == c["exception_class"]]
+        cmp(f"class '{c['exception_class']}' rows", c["rows"], len(g))
+        cmp(f"class '{c['exception_class']}' exposure", c["exposure_cents"],
+            int(g["exposure_cents"].sum()))
+
+
+# ----------------------------------------------------------------------------------
+def _write(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, separators=(",", ":"))
+    return os.path.getsize(path)
+
+
+def _main():
+    ap = argparse.ArgumentParser(description="Export existing outputs as static JSON.")
+    ap.add_argument("data_dir", nargs="?",
+                    default=os.path.dirname(os.path.abspath(__file__)))
+    ap.add_argument("--synth", action="store_true",
+                    help="also export the synthetic batch (off by default: it is 10,615 "
+                         "detail files and a 2.2 MB queue, and it is not real data)")
+    ap.add_argument("--only", choices=[b["key"] for b in BATCHES], default=None,
+                    help="export exactly one batch")
+    args = ap.parse_args()
+    data_dir = args.data_dir
+    out_root = os.path.join(data_dir, OUT_ROOT)
+
+    if args.only:
+        batches = [b for b in BATCHES if b["key"] == args.only]
+    elif args.synth:
+        batches = BATCHES
+    else:
+        batches = [b for b in BATCHES if b["key"] == "eval"]
+
+    _rule("=")
+    _log("EXPORT — static JSON for a front end")
+    _rule("=")
+    _log()
+    _log("  Serialiser only: no decisions, no model calls, no analysis. Summary and")
+    _log("  curve figures are recomputed from the audit files and then cross-checked")
+    _log("  against exposure.py's own implementation. exposure.log is never parsed.")
+    _log()
+
+    if os.path.isdir(out_root):
+        shutil.rmtree(out_root)     # stale detail files would silently outlive a rerun
+    os.makedirs(out_root, exist_ok=True)
+
+    investigations = load_investigations(data_dir)
+    throughput = throughput_from_ctrl_log(data_dir)
+    _log(f"  investigations available: {len(investigations)}")
+    _log(f"  throughput parsed from ctrl.log for: {sorted(throughput) or 'none'}")
+    _log()
+
+    _log(f"  exporting batches: {[b['key'] for b in batches]}"
+         + ("" if len(batches) > 1 else "   (pass --synth to include synthetic)"))
+    _log()
+
+    files, failures = [], []
+    for batch in batches:
+        ap = os.path.join(data_dir, batch["audit"])
+        if not os.path.exists(ap):
+            _log(f"  {batch['audit']} missing — skipping {batch['name']}")
+            continue
+
+        recs = load_audit(data_dir, batch)
+        b_side = load_b_side(data_dir, batch)
+        summary = compute_summary(recs, batch["name"], throughput.get(batch["key"]),
+                                  batch.get("currency", "USD"))
+        curve = compute_curve(recs)
+
+        _log(f"  {batch['name']}: {len(recs):,} records, "
+             f"{summary['escalated']:,} escalated")
+        cross_check(data_dir, batch, summary, curve, failures)
+
+        files.append((f"summary_{batch['key']}.json",
+                      _write(os.path.join(out_root, f"summary_{batch['key']}.json"), summary)))
+        files.append((f"curve_{batch['key']}.json",
+                      _write(os.path.join(out_root, f"curve_{batch['key']}.json"), curve)))
+
+        # queue, from the ranked CSV that exposure.py wrote
+        rp = os.path.join(data_dir, batch["ranked"])
+        by_id = {r["_b_id"]: r for r in recs}
+        queue_rows = []
+        if os.path.exists(rp):
+            q = pd.read_csv(rp, dtype={"b_id": str})
+            for r in q.itertuples():
+                rec = by_id.get(str(r.b_id), {})
+                queue_rows.append({
+                    "rank": int(r.rank),
+                    "b_id": str(r.b_id),
+                    "exposure_cents": int(r.exposure_cents),
+                    "exception_class": r.exception_class,
+                    "triggers": (r.triggers or "").split("|") if r.triggers else [],
+                    "evidence": one_line_evidence(rec),
+                })
+        else:
+            _log(f"    {batch['ranked']} missing — queue built from audit order")
+            esc = sorted([r for r in recs if not r["_auto"]],
+                         key=lambda x: -x["_exposure_cents"])
+            for i, rec in enumerate(esc, 1):
+                queue_rows.append({
+                    "rank": i, "b_id": rec["_b_id"],
+                    "exposure_cents": rec["_exposure_cents"],
+                    "exception_class": rec.get("exception_class"),
+                    "triggers": rec.get("triggers") or [],
+                    "evidence": one_line_evidence(rec),
+                })
+        files.append((f"queue_{batch['key']}.json",
+                      _write(os.path.join(out_root, f"queue_{batch['key']}.json"),
+                             {"batch": batch["name"], "rows": len(queue_rows),
+                              "queue": queue_rows})))
+
+        # one detail file per escalated row
+        ddir = os.path.join(out_root, "detail", batch["key"])
+        n_det = n_inv = 0
+        det_bytes = 0
+        for rec in recs:
+            if rec["_auto"]:
+                continue
+            inv = investigations.get(rec["_b_id"])
+            if inv:
+                n_inv += 1
+            det_bytes += _write(os.path.join(ddir, f"{rec['_b_id']}.json"),
+                                build_detail(rec, inv, b_side.get(rec["_b_id"]),
+                                             batch.get("currency", "USD")))
+            n_det += 1
+        _log(f"    detail files: {n_det:,}  ({n_inv} with an LLM investigation)")
+        files.append((f"detail/{batch['key']}/  ({n_det:,} files)", det_bytes))
+
+    # ---- consistency gate -------------------------------------------------------
+    _log()
+    _rule("=")
+    _log("CONSISTENCY CHECK vs exposure.py")
+    _rule("=")
+    _log()
+    if failures:
+        _log(f"  {len(failures)} DISAGREEMENT(S) — export is inconsistent with the analysis:")
+        for f in failures[:40]:
+            _log(f"    {f}")
+        _log()
+        _log("  Refusing to present these figures as correct. Fix the disagreement.")
+        shutil.rmtree(out_root, ignore_errors=True)
+        _log(f"  {OUT_ROOT} removed so nothing downstream reads contradictory numbers.")
+        sys.exit(1)
+    _log("  All recomputed figures match exposure.py exactly: totals, row counts, both")
+    _log("  precisions, per-class rows and exposure, and every curve point (ranked and")
+    _log("  random) at each review percentage.")
+
+    # ---- size report ------------------------------------------------------------
+    total = 0
+    for _, b in files:
+        total += b
+    for dirpath, _, names in os.walk(out_root):
+        pass
+    n_files = sum(len(n) for _, _, n in os.walk(out_root))
+
+    _log()
+    _rule("=")
+    _log("OUTPUT SIZE")
+    _rule("=")
+    _log()
+    tab = pd.DataFrame([{"file": f, "bytes": b, "MB": round(b / 1e6, 3)}
+                        for f, b in files])
+    _log(tab.to_string(index=False))
+    _log()
+    _log(f"  files written : {n_files:,}")
+    _log(f"  total size    : {total / 1e6:.2f} MB")
+    _log()
+
+    big = [(f, b) for f, b in files if b >= LARGE_FILE_BYTES and not f.startswith("detail/")]
+    if big:
+        _log(f"  SLOW-FETCH WARNING — {len(big)} single file(s) at or above "
+             f"{LARGE_FILE_BYTES / 1e6:.1f} MB:")
+        for f, b in big:
+            _log(f"    {f:34s} {b / 1e6:6.2f} MB  — a browser will block on this; "
+                 f"paginate or stream it")
+    else:
+        _log(f"  No single JSON file reaches {LARGE_FILE_BYTES / 1e6:.1f} MB.")
+    det_dirs = [(f, b) for f, b in files if f.startswith("detail/")]
+    if det_dirs:
+        _log()
+        _log("  Detail files are fetched one at a time by b_id, so their aggregate size")
+        _log("  does not affect page load. Their file COUNT matters for deployment:")
+        for f, b in det_dirs:
+            _log(f"    {f:34s} {b / 1e6:6.2f} MB total")
+
+
+if __name__ == "__main__":
+    _main()

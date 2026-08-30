@@ -132,11 +132,16 @@ def build_basis(a, b, idx, scr, proba, owner, cand_key, tol=AMOUNT_TOL_CENTS,
         refs = [a_ref[j] for j in cands]
         dupref[i] = len(refs) != len(set(refs))
 
-        ak = [k for k, _ in accepted.get(i, []) if k != alloc[t]]
+        # Keep the accepting probability with each added key. `ak` (keys only) still
+        # drives the answer and added_count exactly as before, so no decision changes;
+        # the pairs exist purely so the audit can say WHY a key was added.
+        ak_pairs = [(k, p) for k, p in accepted.get(i, []) if k != alloc[t]]
+        ak = [k for k, _ in ak_pairs]
         added_n[i] = len(ak)
         keys = [alloc[t]] + ak
         answers.append(("[" + ",".join(keys) + "]") if len(keys) > 1 else keys[0])
-        added_keys_all.append(ak)
+        added_keys_all.append([{"allocation_key": k, "probability": round(p, 6)}
+                               for k, p in ak_pairs])
         top1_ids.append(str(a_id[t]))
         cand_detail.append([
             {"rank": r_, "a_id": str(a_id[j]), "score": round(float(s), 6),

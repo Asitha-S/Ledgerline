@@ -1,0 +1,207 @@
+========================================================================================================
+EXPOSURE — value-weighted measurement over decisions already made
+========================================================================================================
+
+  Nothing here is tuned. Every decision, answer and trigger is read verbatim
+  from the controller's audit records; this only re-weights them by money.
+
+  EXPOSURE DEFINITION
+    wrongly auto-closed : the FULL absolute B amount. A wrong answer was posted
+                          and nobody will look at it, so the whole transaction
+                          value is exposed — not a difference between candidates.
+    escalated           : the FULL absolute B amount, at risk pending review.
+                          This INCLUDES rows whose correct answer is blank: until
+                          a reviewer confirms nothing should have matched, the
+                          amount is unresolved.
+    correctly auto-closed: contributes nothing to exposure; counted only in the
+                          denominator of value-weighted precision.
+
+    Escalated exposure is WORKLOAD (value awaiting a human). Wrongly auto-closed
+    exposure is value already out the door unchecked. Do not add them together.
+
+========================================================================================================
+ROW-COUNT vs VALUE-WEIGHTED — BenchRec eval
+========================================================================================================
+
+              metric         by_rows           by_value
+auto-close precision         98.368%            98.815%
+         auto-closed 28,915 (90.22%) 1,166.76B (93.31%)
+           escalated   3,133 (9.78%)     83.61B (6.69%)
+
+  total absolute B value in batch                          1,250.37B
+  value auto-closed CORRECTLY                              1,152.93B   (92.207% of batch)
+  value auto-closed INCORRECTLY  (exposure)                   13.83B   (1.106% of batch)
+  value in the exception queue   (at risk)                    83.61B   (6.687% of batch)
+
+  rows auto-closed incorrectly                                   472
+  mean value of a wrongly auto-closed row                     29.30M
+  mean value of a correctly auto-closed row                   40.53M
+  mean value of an escalated row                              26.69M
+
+  Value-weighted precision is 0.447 points BETTER than row-count precision.
+  Errors fall disproportionately on smaller amounts.
+
+========================================================================================================
+EXCEPTION QUEUE VALUE — BenchRec eval
+========================================================================================================
+
+  'would_be_correct' is value the system would have got right had it closed
+  blind: coverage given up. 'would_be_wrong' is value the escalation caught.
+
+  By exception class (mutually exclusive):
+              exception_class  rows exposure  pct_of_queue_value would_be_correct would_be_wrong mean_row_value
+         missing_counterparty  1408   49.85B              59.615            1.38B         48.47B         35.40M
+               incomplete_set  1334   26.16B              31.292            1.97B         24.20B         19.61M
+duplicate_reference_suspected   391    7.60B               9.093          852.00M          6.75B         19.44M
+
+  By trigger (NON-exclusive — one row can trip several, so these sum to more
+  than the queue total):
+         trigger  rows exposure  pct_of_queue_value would_be_correct would_be_wrong
+completion_added  1725   33.77B              40.385            2.82B         30.95B
+   fee_band_only     0     0.00               0.000             0.00           0.00
+  low_confidence     0     0.00               0.000             0.00           0.00
+    no_candidate  1408   49.85B              59.615            1.38B         48.47B
+
+  ranked queue -> exceptions_ranked_eval.csv  (3,133 rows, 83.61B total exposure)
+
+========================================================================================================
+EXPOSURE-RETIRED CURVE — BenchRec eval
+========================================================================================================
+
+  What fraction of total queue exposure is retired by reviewing the top N% of
+  the queue, under exposure-descending order vs a random order. Ranking only
+  earns its keep if it beats random (mean of 20 seeds).
+
+ review_top_%  rows_reviewed  exposure_retired_ranked_%  exposure_retired_random_%  random_sd  ranked_minus_random
+            1             31                     45.408                      0.655      0.561               44.753
+            5            157                     77.824                      4.759      2.601               73.065
+           10            313                     87.529                     10.036      3.513               77.493
+           25            783                     98.306                     23.144      3.556               75.162
+           50           1566                     99.735                     46.447      5.329               53.288
+           75           2350                     99.975                     71.322      4.417               28.653
+          100           3133                    100.000                    100.000      0.000                0.000
+
+  Reviewing the top 10% of the queue by exposure retires 87.529% of queue value,
+  against 10.036% for random order — a gain of 77.493 points.
+  Random tracks the diagonal by construction; that is the point of showing it.
+
+========================================================================================================
+RELIABILITY BY AMOUNT MAGNITUDE — BenchRec eval
+========================================================================================================
+
+  Buckets are powers of ten in absolute value. This is the diagnostic that says
+  whether the system is more or less trustworthy as the money gets bigger.
+
+       bucket  rows  pct_of_rows   value  escalation_rate_%  auto_close_precision_%  auto_closed_rows
+ < $1  (1e-2)     9        0.028    0.16             11.111                  62.500                 8
+ < $1  (1e-1)     5        0.016    0.98             80.000                 100.000                 1
+     $1 – $10    61        0.190  322.95             16.393                 100.000                51
+   $10 – $100   293        0.914  12.83K             28.328                  96.190               210
+$100 – $1,000   635        1.981 296.45K             21.575                  98.996               498
+   $1e3 – 1e4  1379        4.303   6.31M             10.225                  99.838              1238
+   $1e4 – 1e5  3567       11.130 161.65M             12.307                  99.233              3128
+   $1e5 – 1e6  6567       20.491   2.66B             15.806                  99.096              5529
+   $1e6 – 1e7  6560       20.469  22.43B             10.549                  97.853              5868
+   $1e7 – 1e8 12279       38.314 562.53B              4.121                  97.868             11773
+   $1e8 – 1e9   519        1.619 213.14B             12.331                  99.341               455
+  $1e9 – 1e10   174        0.543 449.44B             10.345                 100.000               156
+
+  Across buckets with >=30 auto-closed rows (10 buckets):
+      smallest:               $1 – $10  precision 100.000%  escalation 16.393%
+      largest:             $1e9 – 1e10  precision 100.000%  escalation 10.345%
+      trend in auto-close precision per bucket: +0.063 points
+
+  >>> Auto-close precision is broadly flat across magnitude. The system
+  >>> is neither better nor worse on large amounts.
+
+========================================================================================================
+ROW-COUNT vs VALUE-WEIGHTED — synthetic 50,000-group
+========================================================================================================
+
+              metric         by_rows           by_value
+auto-close precision         98.431%            98.207%
+         auto-closed 39,385 (78.77%) 2,104.55B (76.86%)
+           escalated 10,615 (21.23%)   633.76B (23.14%)
+
+  total absolute B value in batch                          2,738.31B
+  value auto-closed CORRECTLY                              2,066.81B   (75.478% of batch)
+  value auto-closed INCORRECTLY  (exposure)                   37.74B   (1.378% of batch)
+  value in the exception queue   (at risk)                   633.76B   (23.144% of batch)
+
+  rows auto-closed incorrectly                                   618
+  mean value of a wrongly auto-closed row                     61.07M
+  mean value of a correctly auto-closed row                   53.31M
+  mean value of an escalated row                              59.70M
+
+  Value-weighted precision is 0.224 points WORSE than row-count precision.
+  Errors fall disproportionately on larger amounts — the rows it gets wrong are worth more
+  than the average row it closes.
+
+========================================================================================================
+EXCEPTION QUEUE VALUE — synthetic 50,000-group
+========================================================================================================
+
+  'would_be_correct' is value the system would have got right had it closed
+  blind: coverage given up. 'would_be_wrong' is value the escalation caught.
+
+  By exception class (mutually exclusive):
+              exception_class  rows exposure  pct_of_queue_value would_be_correct would_be_wrong mean_row_value
+               fee_band_match  5681  290.10B              45.775          215.92B         74.18B         51.07M
+duplicate_reference_suspected  2974  182.46B              28.790            3.13B        179.33B         61.35M
+               incomplete_set  1960  161.19B              25.435           56.58B        104.61B         82.24M
+
+  By trigger (NON-exclusive — one row can trip several, so these sum to more
+  than the queue total):
+         trigger  rows exposure  pct_of_queue_value would_be_correct would_be_wrong
+completion_added  5406  368.97B              58.219           59.77B        309.20B
+   fee_band_only  5825  301.12B              47.513          215.92B         85.20B
+  low_confidence     0     0.00               0.000             0.00           0.00
+    no_candidate     0     0.00               0.000             0.00           0.00
+
+  ranked queue -> exceptions_ranked_synth.csv  (10,615 rows, 633.76B total exposure)
+
+========================================================================================================
+EXPOSURE-RETIRED CURVE — synthetic 50,000-group
+========================================================================================================
+
+  What fraction of total queue exposure is retired by reviewing the top N% of
+  the queue, under exposure-descending order vs a random order. Ranking only
+  earns its keep if it beats random (mean of 20 seeds).
+
+ review_top_%  rows_reviewed  exposure_retired_ranked_%  exposure_retired_random_%  random_sd  ranked_minus_random
+            1            106                     15.404                      0.974      0.258               14.430
+            5            531                     57.024                      5.151      0.686               51.873
+           10           1062                     81.905                      9.984      0.699               71.921
+           25           2654                     98.872                     24.868      1.029               74.004
+           50           5308                     99.989                     50.040      1.176               49.949
+           75           7961                    100.000                     74.650      1.048               25.350
+          100          10615                    100.000                    100.000      0.000                0.000
+
+  Reviewing the top 10% of the queue by exposure retires 81.905% of queue value,
+  against 9.984% for random order — a gain of 71.921 points.
+  Random tracks the diagonal by construction; that is the point of showing it.
+
+========================================================================================================
+RELIABILITY BY AMOUNT MAGNITUDE — synthetic 50,000-group
+========================================================================================================
+
+  Buckets are powers of ten in absolute value. This is the diagnostic that says
+  whether the system is more or less trustworthy as the money gets bigger.
+
+       bucket  rows  pct_of_rows     value  escalation_rate_%  auto_close_precision_%  auto_closed_rows
+   $10 – $100  6157       12.314   239.65K             19.458                  98.125              4959
+$100 – $1,000  6350       12.700     2.48M             19.953                  98.662              5083
+   $1e3 – 1e4  6239       12.478    24.76M             22.520                  98.511              4834
+   $1e4 – 1e5  6237       12.474   240.75M             21.485                  98.673              4897
+   $1e5 – 1e6  6321       12.642     2.47B             21.611                  98.345              4955
+   $1e6 – 1e7  6159       12.318    24.02B             20.036                  98.558              4925
+   $1e7 – 1e8  6252       12.504   245.10B             21.529                  98.512              4906
+   $1e8 – 1e9  6285       12.570 2,466.44B             23.214                  98.052              4826
+
+  Across buckets with >=30 auto-closed rows (8 buckets):
+      smallest:             $10 – $100  precision 98.125%  escalation 19.458%
+      largest:              $1e8 – 1e9  precision 98.052%  escalation 23.214%
+      trend in auto-close precision per bucket: -0.017 points
+
+  >>> Auto-close precision is broadly flat across magnitude. The system
+  >>> is neither better nor worse on large amounts.

@@ -1,0 +1,42 @@
+====================================================================================================
+EXPORT — static JSON for a front end
+====================================================================================================
+
+  Serialiser only: no decisions, no model calls, no analysis. Summary and
+  curve figures are recomputed from the audit files and then cross-checked
+  against exposure.py's own implementation. exposure.log is never parsed.
+
+  investigations available: 58
+  throughput parsed from ctrl.log for: ['eval', 'synth']
+
+  exporting batches: ['eval']   (pass --synth to include synthetic)
+
+  BenchRec eval: 32,048 records, 3,133 escalated
+    detail files: 3,133  (30 with an LLM investigation)
+
+====================================================================================================
+CONSISTENCY CHECK vs exposure.py
+====================================================================================================
+
+  All recomputed figures match exposure.py exactly: totals, row counts, both
+  precisions, per-class rows and exposure, and every curve point (ranked and
+  random) at each review percentage.
+
+====================================================================================================
+OUTPUT SIZE
+====================================================================================================
+
+                       file   bytes    MB
+          summary_eval.json    2183 0.002
+            curve_eval.json     794 0.001
+            queue_eval.json  620635 0.621
+detail/eval/  (3,133 files) 4059779 4.060
+
+  files written : 3,136
+  total size    : 4.68 MB
+
+  No single JSON file reaches 1.0 MB.
+
+  Detail files are fetched one at a time by b_id, so their aggregate size
+  does not affect page load. Their file COUNT matters for deployment:
+    detail/eval/  (3,133 files)          4.06 MB total

@@ -1,0 +1,35 @@
+====================================================================================================
+INVESTIGATE — explanation layer over the exception list
+====================================================================================================
+
+  This layer explains decisions. It does not make or change them.
+  Evidence passed to the model contains no labels and no gold answer.
+
+  selection: top 100 eval exceptions by exposure (ranked order)
+  existing records kept: 47   already explained, skipped: 0
+  to explain now: 100  by class: {'missing_counterparty': 74, 'incomplete_set': 26}
+  provider=gemini  model=models/gemini-3.6-flash
+
+  pacing: 10 req/min -> 6.0s between calls; 429 backs off up to ~8min rather than dropping a row
+
+Direct use of automatic function calling (AFC) in Models.generate_content is not recommended. Instead, we recommend to use AFC in Chat.send_message. Similarly, direct use of AFC in Models.generate_content_stream is not recommended. Instead, we recommend to use AFC in Chat.send_message_stream.
+  [1/100] b_id 300279131944  missing_counterparty           grounded=True
+  [2/100] b_id 723681046426  missing_counterparty           grounded=True
+  [3/100] b_id 492483669  missing_counterparty           grounded=True
+  [4/100] b_id 368782454758  missing_counterparty           grounded=True
+  [5/100] b_id 704099628860  missing_counterparty           grounded=True
+  [6/100] b_id 652524958177  missing_counterparty           grounded=True
+  [7/100] b_id 908362579514  missing_counterparty           grounded=True
+  [8/100] b_id 623892293897  missing_counterparty           grounded=True
+  [9/100] b_id 114381398272  missing_counterparty           grounded=True
+  [10/100] b_id 986740524120  incomplete_set                 grounded=True
+  [11/100] b_id 793805136908  incomplete_set                 grounded=True
+  [12/100] b_id 468172203426  missing_counterparty           grounded=True
+  [13/100] b_id 114498350190  incomplete_set                 grounded=True
+  [14/100] b_id 818638803068  incomplete_set                 grounded=True
+        429 quota — waiting 15s (attempt 1/6)
+        429 quota — waiting 30s (attempt 2/6)
+        429 quota — waiting 60s (attempt 3/6)
+        429 quota — waiting 120s (attempt 4/6)
+        429 quota — waiting 240s (attempt 5/6)
+        429 quota — waiting 480s (attempt 6/6)
