@@ -1,0 +1,113 @@
+========================================================================================
+SCORE — MatcherByChatGPT_submission.csv vs BenchRec_cash_v1.0_solution.csv
+========================================================================================
+
+OVERALL
+  total rows            32,048
+  predicted             21,012   (non-abstained)
+  correct               20,014
+  wrong                    998
+  abstained             11,036
+  match rate          62.4501%   (correct / total)
+  match precision     95.2503%   (correct / predicted)
+  abstention rate     34.4358%
+
+----------------------------------------------------------------------------------------
+BROKEN OUT BY LABEL TYPE
+----------------------------------------------------------------------------------------
+
+SINGLE-KEY LABELS  (label set size == 1)
+  total rows            30,057
+  predicted             19,916   (non-abstained)
+  correct               19,802
+  wrong                    114
+  abstained             10,141
+  match rate          65.8815%   (correct / total)
+  match precision     99.4276%   (correct / predicted)
+  abstention rate     33.7392%
+
+MULTI-KEY LABELS   (label set size >= 2)
+  total rows             1,779
+  predicted                884   (non-abstained)
+  correct                    0
+  wrong                    884
+  abstained                895
+  match rate           0.0000%   (correct / total)
+  match precision      0.0000%   (correct / predicted)
+  abstention rate     50.3092%
+
+BLANK LABELS       (label set empty — correct answer is 'no match')
+  total rows               212
+  predicted                212   (non-abstained)
+  correct                  212
+  wrong                      0
+  abstained                  0
+  match rate         100.0000%   (correct / total)
+  match precision    100.0000%   (correct / predicted)
+  abstention rate      0.0000%
+
+----------------------------------------------------------------------------------------
+SIDE-BY-SIDE
+----------------------------------------------------------------------------------------
+label_type  total  predicted  correct  wrong  abstained match_rate match_precision abstention_rate
+single_key  30057      19916    19802    114      10141   65.8815%        99.4276%        33.7392%
+ multi_key   1779        884        0    884        895    0.0000%         0.0000%        50.3092%
+     blank    212        212      212      0          0  100.0000%       100.0000%         0.0000%
+       ALL  32048      21012    20014    998      11036   62.4501%        95.2503%        34.4358%
+
+----------------------------------------------------------------------------------------
+DATA INTEGRITY
+----------------------------------------------------------------------------------------
+  prediction rows supplied                32,048
+  duplicate B_ids in predictions               0   (first kept)
+  solution B_ids MISSING from preds            0   (scored as abstentions)
+  extra prediction B_ids not in sol            0   (ignored)
+
+  No solution B_ids are missing from the prediction file — nothing was
+  imputed as an abstention on account of absence.
+
+========================================================================================
+B_valueDate RANGE — TRAIN vs EVAL
+========================================================================================
+
+ file  non_null_B_valueDate        min        max  span_days        p01     median        p99
+train                 68975 2015-03-08 2023-03-05       2919 2022-04-15 2022-12-08 2023-03-04
+ eval                 32048 2022-12-21 2023-05-31        161 2023-03-08 2023-04-20 2023-05-31
+
+  min/max are the literal extremes you asked for; p01/median/p99 are included
+  beside them because the extremes are not representative — see below.
+
+  Row counts by year:
+      train   eval
+year              
+2015      3      0
+2021     30      0
+2022  42917      1
+2023  26025  32047
+
+----------------------------------------------------------------------------------------
+IS THE SPLIT TEMPORAL?
+----------------------------------------------------------------------------------------
+
+  train B_valueDate   2015-03-08  ..  2023-03-05
+  eval  B_valueDate   2022-12-21  ..  2023-05-31
+
+  eval rows dated on or before train's last date   0.8238%
+  train rows dated on or after eval's first date   43.7622%
+
+  VERDICT: YES, effectively — this is a temporal split with a thin overlap tail.
+
+  The ranges technically overlap (2022-12-21 .. 2023-03-05, 74 days),
+  but only 264 eval rows (0.8238%) fall at or
+  before train's last date. The other 99.1762% come strictly after it.
+  Read the split as: train up to ~2023-03-05, evaluate on what follows,
+  plus a handful of late-settling stragglers.
+
+  Do not be misled by train's min. Its range LOOKS like 8 years, but the mass
+  is not spread over it — see the by-year counts above. Train is essentially
+  2022 through early 2023, with a few outlier rows dated much earlier.
+
+  Consequence either way: allocation keys embed a date (field 2 of the key), so a
+  key observed in train can essentially never be reused verbatim in eval. Memorising
+  the training label set will not transfer, and a random-shuffle validation split of
+  train will read optimistically against eval.

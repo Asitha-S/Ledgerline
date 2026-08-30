@@ -2,16 +2,10 @@
 
 Cash reconciliation matching, evaluated on BenchRec.
 
-**On BenchRec eval, 90.224% of transactions are auto-closed at 98.368% accuracy.**
-
-That is 28,915 of 32,048 transactions closed without review, 3,133 escalated for a human.
-Throughput 621.8 records/sec. If every row were closed blind instead, overall match rate
-would be 91.794%. (`ctrl.log`, FINAL REPORT — BenchRec eval)
-
-These numbers come from BenchRec_cash_v1.0, real labelled cash reconciliation data from the
-ICAIF 2023 benchmark competition. They do not come from data we generated.
-
-### Comparison
+**On BenchRec eval — real labelled data from the ICAIF 2023 benchmark — 90.224% of
+transactions are auto-closed at 98.368% accuracy.** The remaining 3,133 are escalated to a
+human holding 83.61B USD of exposure, ranked so the largest is reviewed first. The batch of
+32,048 records is processed in 53.91 s, or 594.4 records per second.
 
 Alongside the dataset in this folder is `MatcherByChatGPT_submission.csv`. Scored with the
 same scorer:
@@ -19,257 +13,394 @@ same scorer:
 | | match rate | precision | abstention |
 |---|---|---|---|
 | MatcherByChatGPT_submission.csv | 62.4501% | 95.2503% | 34.4358% |
-| this system (auto-closed rows) | — | **98.368%** | 9.776% escalated |
-| this system (all rows closed blind) | **91.794%** | 95.466% | — |
+| this system, closed blind | 91.7936% | 95.4665% | — |
+| this system, as a controller | 90.224% auto-closed | 98.368% on what it closed | 9.776% escalated |
 
-**That submission is a prediction file found alongside the dataset. It is not an official
-published baseline, and we do not know who produced it or under what conditions.** Treat it
-as a reference point, not as the state of the art. Its 95.2503% precision is bought with a
-34.4358% abstention rate; it also scores 0.0000% on all 1,779 multi-key labels, because it
-never emits more than one key (`score.py` output).
+**That file is a prediction file found next to the dataset. It is not an official baseline,
+not a published result, and carries no provenance.** It is here because it is the only other
+answer set in the folder, and because it makes a useful point: its 95.2503% precision is
+bought by abstaining on 34.4358% of the file, and it scores 0.0000% on every multi-key label
+(884 predicted, 0 correct). Treat it as a reference point, not as the state of the art.
 
 ---
 
 ## What the system does
 
-Given a bank statement entry (a "type B" transaction), find which internal ledger entries
-(type A) it reconciles against, and emit the **allocation key** of those entries — a string
-of the form `CURRENCY_DATE_ACCOUNT_ATTRIBUTES`. The answer can be one key, several keys, or
-none at all when the transaction genuinely has no counterpart.
+A bank statement line arrives. Something in the ledger should account for it — sometimes one
+entry, sometimes several, sometimes nothing at all. The task is to name the allocation keys
+that answer for it.
 
-Then decide, per transaction, whether the answer is good enough to post automatically or
-should go to a human with a reason attached.
+This is not a matcher. A matcher answers *what does this pair with*. This answers a second
+question: *do I trust that answer enough to post it without a human?* Everything it cannot
+defend is escalated with a reason attached, and the escalations are ordered by how much money
+is standing behind them, so a reviewer with limited hours spends them on the largest exposures
+first.
 
-## Architecture
+### Pipeline
 
-Three layers, each independently scored.
+**Retrieval** (`retrieve.py`) — TF-IDF over character 3–5 grams. The query is the B-side
+reference fields concatenated; the candidates are the A-side fields plus `A_allocation`.
+Candidates are blocked by currency and account, then by a date window, then by amount at a
+0.01 tolerance. Blocking cuts the pool from 6,380.9 candidates per query (date window only)
+to a mean of 14.08, median 1. Top-1 by cosine gives 95.3688% match at 98.4138% precision on
+single-key labels.
 
-**1. Retrieval — `retrieve.py`**
-Blocks candidates by currency, account, a ±7-day value-date window, and an amount match in
-integer cents. Scores the survivors with TF-IDF over character 3–5-grams, cosine similarity,
-top-5, keeps top-1. On eval single-key labels: 95.3688% match, 98.4138% precision
-(`retrieve.log`).
+**Set completion** (`complete.py`) — a single top-1 cannot answer a multi-key label. A
+gradient-boosted classifier over 15 features decides, for each of the top-5 candidates,
+whether it belongs in the answer set. Trained on BenchRec train only, threshold 0.5, no
+eval-label tuning. Overall match 89.9900% → 91.7936%.
 
-**2. Completion — `complete.py`**
-Retrieval emits exactly one key, so every multi-key label scores zero. A gradient-boosted
-classifier decides, for each of the remaining top-5 candidates, whether it belongs in the
-set. Trained on BenchRec train only: 19,339 candidate decisions, 8,905 positive (46.0468%).
-On eval it lifts overall match 89.9900% → 91.7936% (`complete.log`).
+**Decision layer** (`controller.py`) — auto-close or escalate. Four triggers, each derived
+from a measurement rather than a guess, and each scored on whether it catches more wrong
+answers than right ones. Escalations are labelled with one of five exception classes. Every
+decision is written to a JSONL audit trail with the candidates considered, their scores and
+amount deltas, the triggers that fired, and the answer proposed.
 
-**3. Decision layer — `controller.py`**
-Auto-close or escalate. Four triggers, each traceable to a measurement: `completion_added`,
-`fee_band_only`, `low_confidence` (dropped — see findings), `no_candidate`. Every escalated
-row gets one of five exception classes. Every transaction gets a JSONL audit record with
-candidates, scores, triggers, decision and evidence.
+**Investigation** (`investigate.py`) — an LLM writes a plain-English explanation of why a row
+was escalated. It never makes, changes or ranks a match, and it is given no labels and no gold
+answer. Every number it writes is checked against the evidence it was passed; ungrounded
+output is surfaced, not hidden.
 
-`score.py` is the scorer used everywhere: exact set equality, blank labels scored not
-dropped, missing rows counted as abstentions.
+`exposure.py` re-weights the decisions already made by money. `export.py` serialises them to
+static JSON. `web/` is a review interface over that JSON. `check.py` is a Playwright layout
+check over the interface.
 
 ---
 
-## Datasets
+## Datasets, and what each is for
 
 | file | rows | role |
 |---|---|---|
-| `BenchRec_cash_v1.0_train.csv` | 149,854 (A 80,879, B 68,975) | fits the completion classifier and the decision thresholds |
-| `BenchRec_cash_v1.0_eval.csv` | 69,171 (A 37,123, B 32,048) | **produces every headline number** |
-| `BenchRec_cash_v1.0_solution.csv` | 32,048 | eval labels |
+| `BenchRec_cash_v1.0_train.csv` | 68,975 B rows | fits the completion classifier and every threshold |
+| `BenchRec_cash_v1.0_eval.csv` | 32,048 B rows | produces every headline number |
+| `BenchRec_cash_v1.0_solution.csv` | 32,048 | eval labels, used for measurement only |
 | `MatcherByChatGPT_submission.csv` | 32,048 | third-party prediction file, comparison only |
-| `synth_transactions.csv` | 158,534 (A 108,534, B 50,000) | per-class breakdowns, throughput, domain-shift test |
-| `synth_small_transactions.csv` | 160 (A 110, B 50) | 50 groups / 50 B records — satisfies the stated 50+ record requirement |
+| `synth_transactions.csv` | 158,534 (A 108,534, B 50,000) | per-class breakdowns, throughput, domain shift |
+| `synth_small_transactions.csv` | 160 (A 110, B 50) | the stated 50+ record requirement |
 
-Eval label mix: 30,057 single-key (93.79%), 1,779 multi-key (5.55%), 212 blank (0.66%)
-(`findings.log`).
+**Train** fits models and thresholds. The completion classifier is fitted on 19,339 candidate
+decisions from train, 8,905 positive (46.05%). The `low_confidence` grid was swept against
+train's inline `targetAllocation` labels; eval and synthetic were not consulted.
 
-**No headline number comes from generated data.** The synthetic batches exist to answer
-questions the real data cannot: per-corruption-class accuracy (real data has no corruption
-labels), throughput at a chosen scale, and whether the classifier survives domain shift.
-Synthetic results are reported separately and always labelled as such.
+**Eval** produces every headline number. Its label mix: 30,057 single-key (93.79%), 1,779
+multi-key (5.55%), 212 blank (0.66%).
 
-The generator (`generate.py`) is config-driven and gated: if exact amount matching scores
-above 90% the data is too easy to ship. It scores 57.000%, 33 points below the gate
-(`gen.log`).
+**Synthetic** satisfies the stated 50+ record minimum, and does three jobs train and eval
+cannot: it gives per-class breakdowns (the real data has no class labels), it gives clean
+throughput figures at scale, and it is the domain-shift test — the completion classifier is
+applied to it frozen, without retraining, refitting or recalibration.
+
+Both synthetic batches pass a difficulty gate set in advance: if exact amount matching scored
+above 90%, the data would be too easy to be worth keeping. Measured 56.000% on the 50-group
+batch and 57.000% on the 50,000-group batch.
+
+**No headline number comes from data we generated.** 90.224%, 98.368%, 3,133, 83.61B and
+594.4 rec/s are all BenchRec eval. Synthetic numbers are labelled as such wherever they
+appear.
+
+The split is temporal, which matters: train runs 2015-03-08 to 2023-03-05, eval 2022-12-21 to
+2023-05-31, and only 0.8238% of eval rows fall at or before train's last date. Allocation keys
+embed a date, so a key seen in train can essentially never be reused verbatim in eval.
 
 ---
 
-## Findings
+## What broke
 
 ### 1. Multi-key groups repeat rather than partition
 
-The instinct is that a multi-key allocation splits the transaction — several ledger entries
-summing to the statement amount. It does not. In 83.18% of multi-key train rows the amounts
-**repeat** B's amount; only 2.65% partition it; 14.17% do neither. In 70.23% of multi-key
-rows *every single* A row in the group carries B's exact amount (`findings.log`).
+**Assumed.** A multi-key label means several ledger entries that sum to the statement amount.
+That framing makes this a subset-sum problem, and a solver over the top-5 was scoped.
 
-`matchId 184541000741` — 6 A rows, 6 B rows, 6 distinct allocation keys:
+**Measured** (`findings.log`, train, 6,678 multi-key B rows):
+
+| regime | share of multi-key B rows |
+|---|---|
+| repeat | 83.18% |
+| neither | 14.17% |
+| partition | 2.65% |
+
+And the distribution of *what fraction of the A rows in a group carry B's exact amount* has
+its mass at the top: **70.23% of multi-key rows have every A row sitting at B's exact
+amount.** Worked example, `matchId 184541000741` — 6 A rows, 6 B rows, 6 distinct keys:
 
 ```
 B rows (external statement)          A rows (internal ledger)
-160725871107  DR  203,235.00         883399681180  CR  203,235.00   K1
-670730959472  DR  203,235.00         434384224841  CR  203,235.00   K2
-996827316754  DR  203,235.00         680184429448  CR  203,235.00   K3
-293269702131  DR  203,235.00         444196382816  CR  203,235.00   K4
-123784971159  DR  203,235.00         258049165276  CR  203,235.00   K5
-462933939786  DR  203,235.00         991589274456  CR  203,235.00   K6
+  160725871107  DR  203235.00          883399681180  CR  203235.00  K1
+  670730959472  DR  203235.00          434384224841  CR  203235.00  K2
+  996827316754  DR  203235.00          680184429448  CR  203235.00  K3
+  293269702131  DR  203235.00          444196382816  CR  203235.00  K4
+  123784971159  DR  203235.00          258049165276  CR  203235.00  K5
+  462933939786  DR  203235.00          991589274456  CR  203235.00  K6
 
-B amount                    203,235.00
-sum of all A amounts      1,219,410.00    (a partition would equal B)
-A rows with amount == B          6 of 6   (a repeat means all of them)
-target set        [K1, K2, K3, K4, K5, K6]
+B amount                203,235.00
+sum of all A amounts  1,219,410.00   (a partition would equal B)
+A rows at B's amount        6 of 6   (a repeat means all of them)
+target set            [K1, K2, K3, K4, K5, K6]
 ```
 
-Six identical amounts on each side, six different keys, sum 6× B. Consequence: amount is
-useless for choosing *among* members of a multi-key group, because it is identical across
-all of them. It is what pulls them into the candidate pool together. Subset-sum would have
-been the wrong tool.
+**Changed.** The subset-sum solver was dropped before being written. `complete.py` confirmed
+it independently: the top-1's A rows alone equal B's amount exactly 63.14% of the time, all
+gold keys sum to B's amount exactly only 2.59% of the time, and adding the extra rows moves
+the sum *closer* to B in only 2.25% of cases. The signal that does work is ranking — the
+rank-2 candidate is a genuinely additional gold key 92.52% of the time.
 
-### 2. Float precision at 6.6e9, and the switch to integer cents
+**Consequence.** A classifier over candidate ranks, not an arithmetic solver. Worth
+**+1.8036 points** of overall match rate. A subset-sum solver would have been the wrong tool
+applied to 2.65% of the cases.
 
-The largest absolute amount in eval is 6,567,592,109.00. At that magnitude a float64 has a
-resolution of 9.5367431640625e-07. Two values exactly one cent apart subtract to
-0.009999997913837433 — so a `<= 0.01` tolerance is not reliably representable
-(`findings.log`).
+### 2. Float precision at 6.6 billion
 
-All amount comparisons are done in integer cents. This is not cosmetic: it moved the
-measured true-match ceiling for the 0.01 tolerance from 96.3968% to 96.7196%. Roughly 0.32
-points of apparent headroom were a floating-point artefact.
+**Assumed.** An amount tolerance of 0.01 means "within one cent", and `abs(a - b) <= 0.01`
+expresses it.
 
-### 3. The digit-run negative result
+**Measured** (`findings.log`). The largest absolute amount in eval is 6,567,592,109.00.
+float64 resolution at that magnitude is 9.5367431640625e-07. Two values exactly one cent
+apart subtract to `0.009999997913837433` — under the threshold, but only just, and by an
+accident of representation rather than by design. The comparison was not reliably expressing
+what it claimed to express.
 
-The linking signal between the two sides is a shared ~9-digit reference run embedded in
-`B_transactionAttributes` and the A-side text. It is real: 19,394 of 30,057 true matches
-(64.5241%) share a digit run of length 7–12 (`retrieve.log`).
+**Changed.** Every amount is carried and compared as an integer number of cents. The
+one-cent difference above is exactly `1`.
 
-Extracting it explicitly changed nothing. As a score boost it altered **zero** predictions.
-The boost *could* have reordered 6,131 queries — those where some but not all surviving
-candidates share a run. On **6,131 of 6,131 (100.0000%)** cosine already ranked a shared-run
-candidate first. The character n-grams were already scoring on the digit run; naming it
-explicitly re-adds information the model had absorbed.
+**Consequence.** The tolerance is now exact rather than approximate. From the tolerance sweep
+in `retrieve.log`, the reachable ceiling at exact-amount blocking is 96.0808% and at a
+0.01 tolerance is **96.7196%**. Which of those two the comparison was actually implementing
+had been left to floating-point noise at the boundary.
 
-As a hard filter it was actively harmful: match rate 95.3688% → 62.8073% (−32.5615) to buy
-+1.0383 of precision, because on 34.10% of queries no surviving candidate shares a run at all.
+### 3. The digit-run signal is real and completely redundant
 
-### 4. Dropping the dead field made it worse
+**Assumed.** Bank references and ledger references share long digit runs. Matching on a shared
+run of 7–12 digits should be a strong signal worth adding.
 
-`B_transactionReferences` shares a digit run with the A side on only 3.16% of true matches,
-against 63.69% for `B_transactionAttributes`. It looked like dead weight diluting the query.
+**Measured** (`retrieve.log`). The signal is real: of 30,057 true single-key matches, 19,394
+share a digit run of length 7–12 — **64.5241%**. But after amount blocking has already cut the
+pool to ~15 candidates, 42.7661% of the *surviving* candidates share a run with the query,
+which is a weak discriminator. And the redundancy check settles it:
 
-Removing it cost 2.33 points: single-key match 95.3688% → 93.0399%, precision 98.4138% →
-96.0106%, not-in-top-5 3.5499% → 4.2752% (`retrieve.log`).
+```
+queries where the boost COULD reorder (some but not all candidates share): 6,131
+of those, cosine's top-1 ALREADY shares a run:                             6,131  (100.0000%)
+```
 
-"Carries no digit-run signal" is not "carries no signal". Mean query length falls from 50.3
-to 30.7 characters, and the shorter query gives the n-gram cosine less to discriminate with
-among near-identical candidates. The field was contributing through a channel we had not
-measured.
+**Changed.** Neither form shipped. As a hard filter it collapses match rate by 32.5615 points
+(62.8073%) because 34.10% of queries have no surviving candidate sharing a run at all,
+forcing an abstention on every one. As a boost it changes nothing.
 
-### 5. Domain shift: completion helps on real data and hurts on synthetic
+**Consequence.** `+0.0000 pts` on every metric — top-1, not-in-top-5, match rate, precision.
+The character n-grams *are* scoring on the shared run; cosine had already absorbed it.
 
-Same frozen classifier, trained on BenchRec train, never retrained:
+### 4. Dropping `B_transactionReferences` cost 2.33 points
 
-| | completion OFF | completion ON | delta |
+**Assumed.** Since the digit-run signal turned out to be redundant, and the reference field is
+where the digit runs live, that field was assumed to be carrying nothing the attributes field
+did not already carry. Experiment A dropped it and built the query from
+`B_transactionAttributes` alone.
+
+**Measured** (`retrieve.log`):
+
+| | top-1 | precision | not in top-5 |
 |---|---|---|---|
-| BenchRec eval | 89.9900% | 91.7936% | **+1.8036** |
-| synthetic 50k | 84.330% | 82.030% | **−2.300** |
+| cosine + amount (reference) | 95.3688% | 98.4138% | 3.5499% |
+| attributes only | 93.0399% | 96.0106% | 4.2752% |
+| | **−2.3289 pts** | **−2.4032 pts** | +0.7253 pts |
 
-On real eval it gains 800 rows and loses 222, net +578 (`complete.log`). On synthetic it
-gains 60 points on the `repeat` class (0.000% → 60.000%) but the overall number goes
-backwards, and the cause is one class: **`duplicate_reference` collapses 75.944% → 25.398%,
-a loss of 50.5 points** (`synth_run.log`).
+**Changed.** Nothing — the reference field stayed.
 
-Those groups contain a near-clone A row — same amount, same reference string, attributes
-plus one word. The classifier reliably accepts it as a second key and breaks answers that
-were correct. That corruption does not exist in BenchRec train, so the model was never
-taught to reject it. On the `repeat` class the transfer works: of 1,855 groups, 1,113
-recovered the full key set exactly, 74 added only correct keys but stopped short, 135 added
-at least one wrong key, and 533 added nothing.
+**Consequence.** "Carries no digit-run signal" was not the same claim as "carries no signal",
+and conflating them would have cost 2.3289 points. Finding 3 and finding 4 are about the same
+field and point in opposite directions; both were measured separately rather than inferred
+from one another.
 
-### 6. The low_confidence trigger: swept on train, failed, dropped
+### 5. Completion is +1.80 on real data and −2.30 on synthetic
 
-The trigger escalates a transaction when top-1 similarity or the rank1–rank2 margin falls
-below a floor. On an early eval run it escalated 17,024 rows of which 68.7% were already
-correct.
+**Assumed.** A component that helps on eval helps in general.
 
-Criterion set in advance: keep the setting where the trigger's would-have-been-correct rate
-falls **below 50%** — catching more wrong than right — while maximising auto-close coverage.
+**Measured.** On BenchRec eval, completion at threshold 0.5 moves overall match
+89.9900% → 91.7936% (**+1.8036**) and overall precision 93.5908% → 95.4665%. It gains 800
+multi-key rows and loses 222 single-key rows, since a wrongly added key breaks an otherwise
+correct answer. On the synthetic 50,000-group batch, applied frozen, the same component moves
+overall match 84.330% → 82.030% (**−2.300**).
 
-42 grid points were swept on `BenchRec_cash_v1.0_train.csv` using train's inline labels, and
-on nothing else. 41 of them fire the trigger. **All 41 failed.** The best result across the
-entire grid is 86.568% already-correct (min_top1=0.0, min_margin=0.01) — not close to the
-bar. The marginal view, counting only rows the trigger alone removes from auto-close, is
-worse at 90.345% (`ctrl.log`).
+The per-class table locates it exactly (`synth_run.log`):
 
-The trigger was dropped.
+| class | rows | match, completion off | match, completion on | delta |
+|---|---|---|---|---|
+| duplicate_reference | 4,024 | 75.944% | 25.398% | **−50.546** |
+| one_to_one | 46,944 | 89.328% | 84.507% | −4.821 |
+| repeat | 1,855 | 0.000% | 60.000% | +60.000 |
 
-**It was not doing nothing.** On train it lifts auto-close precision from 96.056% to 98.870%
-— it buys real precision, at 29 points of coverage. It is a bad exchange rate, not a useless
-signal. If auto-close precision matters more than coverage in your workflow, the grid is in
-`ctrl.log` and the least-bad firing setting is visible there. We did not ship it because it
-fails the criterion we set before looking.
+**Changed.** Nothing was retuned to make the synthetic number look better — that would have
+destroyed the test. The result is reported as the generalisation signal it is.
 
-Dropping it moved eval auto-close coverage from 37.350% to 90.224%, with auto-close
-precision going 99.148% → 98.368%: 0.78 points of precision for 53 points of coverage.
+**Consequence.** Completion does exactly what it was built to do (repeat groups go from 0% to
+60%), and it does it while being badly miscalibrated on duplicated references it never saw in
+training. On out-of-domain data the losses exceed the gains.
+
+### 6. The `low_confidence` trigger, dropped
+
+**Assumed.** A low top-1 similarity, or a thin margin between rank 1 and rank 2, indicates an
+answer not worth trusting.
+
+**Criterion, set before looking at results.** Keep the trigger only if the rows it escalates
+would have been *wrong* more often than right — a trigger whose escalations are mostly correct
+answers is buying precision by giving up coverage indiscriminately. Threshold: fewer than 50%
+of escalated rows already correct.
+
+**Measured** (`ctrl.log`). 42 grid points swept on train only — `min_top1` in
+{0.00, 0.02, 0.04, 0.06, 0.08, 0.10, 0.15} × `min_margin` in
+{0.000, 0.005, 0.010, 0.020, 0.040, 0.080}. One point disables the trigger, so 41 fired. **The
+criterion failed at all 41.** The best available was `min_top1=0.00, min_margin=0.010` at
+86.568% already-correct — still escalating six correct rows for every wrong one.
+
+**Changed.** Dropped, by setting both thresholds to 0.0. It never fires on eval or synthetic.
+
+**Consequence.** It is worth being precise about what was given up, because the trigger was
+not doing nothing. At that same best point, auto-close precision on train rises from 96.056%
+to 98.870% — nearly three points of real precision. But it costs coverage: auto-close falls
+from 87.332% to 58.499% of the file. That is 28.8 points of coverage for 2.8 points of
+precision, most of it spent escalating answers that were already right. The trigger was buying
+something real at a bad exchange rate, which is harder to notice than a trigger that does
+nothing at all.
+
+### 7. The LLM transposed a figure inside an otherwise correct paragraph
+
+**Assumed.** An explanation layer that is given the evidence and told to use only the evidence
+will use only the evidence.
+
+**Measured.** Of 58 explanations generated, 57 pass the automated grounding check and 1 does
+not. `b_id 745373354167` (synthetic batch, `fee_band_match`,
+`models/gemini-3.5-flash-lite`). The evidence gave five candidate deltas: 3.96, 4.82,
+**1.49**, 12.29, 8.99. The model wrote:
+
+> ...yielding respective deltas from B of 3.96, 4.82, **1.29**, 12.29, and 8.99.
+
+Every other figure in the paragraph is correct: the transaction amount, its cents form, all
+five candidate amounts, the other four deltas, the pool size, the exception class. One digit
+pair transposed, buried in an otherwise accurate sentence — exactly the error a human reviewer
+skims past.
+
+**Changed.** Nothing about the prompt. The grounding check already caught it: every numeric
+token in the output is matched against the numbers in the evidence, and `1.29` had no source.
+
+**Consequence.** The check is the deliverable, not the explanation. Ungrounded output is
+surfaced in the interface with the claimed figure next to what was actually in the evidence,
+rather than being suppressed or silently regenerated. A separate check confirms no response
+proposed a match: 58 of 58 clean.
+
+---
+
+## Evaluation
+
+### Two precision measures
+
+| | by rows | by value |
+|---|---|---|
+| auto-close precision | 98.368% | 98.815% |
+| auto-closed | 28,915 (90.22%) | 1,166.76B (93.31%) |
+| escalated | 3,133 (9.78%) | 83.61B (6.69%) |
+
+Value-weighted precision is **0.447 points better** than row-count precision. The reason is in
+the means: a wrongly auto-closed row is worth 29.30M on average, a correctly auto-closed row
+40.53M. Errors fall disproportionately on smaller-than-average transactions, which is the
+favourable direction and is invisible if you only count rows.
+
+Of the 1,250.37B total in the batch: 1,152.93B auto-closed correctly (92.207%), 83.61B in the
+exception queue (6.687%), 13.83B auto-closed incorrectly across 472 rows (1.106%).
+
+Auto-close precision is flat across magnitude — the trend across the 10 buckets with at least
+30 auto-closed rows is +0.063 points per bucket, and the $1e9–1e10 bucket is 100.000% over 156
+rows. The system is neither better nor worse on large amounts.
+
+### The exposure-retired curve
+
+What share of queue exposure is retired by reviewing the top N%, ranked by exposure against a
+random order (mean of 20 seeds):
+
+| review top | rows | ranked | random | sd | gain |
+|---|---|---|---|---|---|
+| 1% | 31 | 45.408% | 0.655% | 0.561 | +44.753 |
+| 5% | 157 | 77.824% | 4.759% | 2.601 | +73.065 |
+| **10%** | **313** | **87.529%** | **10.036%** | 3.513 | **+77.493** |
+| 25% | 783 | 98.306% | 23.144% | 3.556 | +75.162 |
+| 50% | 1,566 | 99.735% | 46.447% | 5.329 | +53.288 |
+
+Reviewing 313 of 3,133 escalations retires 87.529% of the money at risk. Random order tracks
+the diagonal, which is the point of showing it — the ranking is worth having only in the gap
+between the two columns.
+
+### Per-trigger verdicts, BenchRec eval
+
+| trigger | escalated | would be correct | verdict |
+|---|---|---|---|
+| `no_candidate` | 1,408 | 12.429% | earning its keep |
+| `completion_added` | 1,725 | 46.377% | mixed |
+| `fee_band_only` | 0 | — | never fired |
+| `low_confidence` | 0 | — | dropped, see finding 6 |
+
+By exception class: `missing_counterparty` 1,408 rows / 49.85B / 12.429% already correct;
+`incomplete_set` 1,334 / 26.16B / 55.997%; `duplicate_reference_suspected` 391 / 7.60B /
+13.555%.
+
+Fee-band widening is configured per batch, and both settings are run against both batches so
+the choice is visible. It is off for eval — real BenchRec has effectively no fee deductions,
+so widening admits only false candidates (overall match 91.794% → 75.181%) and additionally
+masks the `no_candidate` trigger by guaranteeing a non-empty pool (1,408 firings → 165). It is
+on for synthetic, which contains fees by construction, where it gains +4.750 points.
 
 ---
 
 ## Limitations
 
-**106 confidently-wrong completions that no threshold separates.** Sweeping the completion
-acceptance threshold from 0.50 to 0.95, single-key rows broken by a wrongly added key fall
-only from 222 to 106. Half the damage is done by candidates the classifier scores ≥ 0.95. No
-threshold in that range restores single-key precision to the 98.4138% completion-off
-baseline — the closest is 0.95 at 98.0499%, still 0.35 short, and by then multi-key match
-rate has fallen from 44.9691% to 21.5852% (`complete.log`). Fixing this needs a better
-feature or a rejection model, not a threshold.
+**The synthetic result is the real generalisation signal, and it is worse.** Auto-close
+coverage is 78.770% at 98.431% precision against 90.224% at 98.368% on eval, and completion
+turns from +1.80 to −2.30. On synthetic, value-weighted precision is 0.224 points *worse* than
+row-count precision — errors there fall on larger-than-average rows, the opposite of eval.
 
-**Fee handling requires per-dataset configuration.** Widening the amount block to admit
-candidates up to 5% below B's amount is correct for data containing fees and wrong for data
-without them:
+**The synthetic data is ours.** It inherits its generator's assumptions, and the `neither` and
+`partition` classes score 0.000% under every configuration tried.
 
-| batch | widening | auto coverage | auto precision | overall match | no_candidate fires |
-|---|---|---|---|---|---|
-| BenchRec eval | OFF | 90.224% | 98.368% | 91.794% | 1,408 |
-| BenchRec eval | ON | 74.260% | 98.193% | 75.181% | 165 |
-| synthetic 50k | OFF | 84.410% | 93.996% | 82.030% | 3,944 |
-| synthetic 50k | ON | 78.770% | 98.431% | 86.780% | 0 |
+**Investigations cover 58 of a targeted 100**, of which 30 are eval rows and appear in the
+exported detail files. The run stopped on free-tier quota exhaustion, not because it finished.
 
-Real BenchRec has effectively no fee deductions, so widening admits only false candidates and
-costs 16.6 points of overall match. It also **silently disables the `no_candidate` trigger**
-by guaranteeing a non-empty pool — firings drop 1,408 → 165 on eval and 3,944 → 0 on
-synthetic. There is no single setting that is right for both, so it is per-batch config in
-`controller.py` (`BATCH_FEE_WIDENING`) and has to be set deliberately per dataset.
+**The amount tolerance discards true matches.** At 0.01, 3.2804% of true matches are outside
+the block and can never be recovered by any similarity function. Widening to 1.00 recovers
+some (ceiling 97.6345%) but costs precision (97.9746%); widening to 1% relative reaches a
+98.4163% ceiling but drops precision to 89.5623%. The setting is a deliberate trade, not a
+free one.
 
-**`incomplete_set` escalates 55.997% already-correct rows.** On eval it accounts for 1,334
-of 3,133 escalations and more than half of them would have been right if auto-closed
-(56.480% on synthetic). By the same criterion that killed `low_confidence`, this trigger is
-costing coverage for little return and is a candidate for the same treatment. It was left in
-because the fit was scoped to `low_confidence`; re-running the sweep with it included is the
-obvious next step. `fee_band_only` on synthetic has the same problem at 59.382%.
+**`incomplete_set` escalates mostly-correct rows.** 55.997% of its 1,334 escalations would
+have been right if closed blind. It survives the same criterion that killed `low_confidence`
+only because it is close to the line, not comfortably past it — and unlike `low_confidence`
+its 44% wrong share concentrates 24.20B of caught exposure.
 
-**Other limits.** Multi-key match rate is bounded at 48.17% by top-5 retrieval — 19.45% of
-multi-key rows have no gold key in the top-5 at all, so completion cannot reach them. The
-`neither` and `partition` classes score 0.000% under every configuration tried. Synthetic
-results are from data whose generator we wrote, and inherit its assumptions.
+**`queue_synth.json` is 2.11 MB and unpaginated** (2,209,247 bytes); the interface blocks on it
+when switching to the synthetic batch.
+
+Eval labels were used for measurement only. No threshold, feature or hyperparameter was
+selected against them.
 
 ---
 
 ## Reproduce
 
-Requires Python 3.12 with `pandas`, `numpy`, `scikit-learn`. Run from the project directory.
+Python 3.12 with `pandas`, `numpy`, `scikit-learn`. Run from the project directory. The
+BenchRec CSVs are not in this repository — obtain them from the ICAIF 2023 benchmark and place
+them alongside the scripts.
 
 ```bash
 # 1. Understand the data — inventory, schema, label completeness, allocation structure
 python explore_benchrec.py            # writes benchrec_report.md
 
-# 2. Score the third-party submission
+# 2. Score the third-party submission, and test whether the split is temporal
 python score.py                       # 62.4501% match / 95.2503% precision
 
-# 3. Retrieval + the two experiments + the amount-tolerance sweep
+# 3. Retrieval, both experiments, the amount-tolerance sweep
 python retrieve.py > retrieve.log     # ~1 min
 
-# 4. Set completion: measurement, ceiling, classifier, threshold sweep
+# 4. Set completion: measurement, recall ceiling, classifier, threshold sweep
 python complete.py > complete.log     # ~3 min
 
-# 5. Generate synthetic data at both scales and validate the difficulty gate
+# 5. Generate synthetic data at both scales, validate the difficulty gate
 python generate.py > gen.log          # ~4 min
 
 # 6. Full pipeline over both synthetic batches (out-of-domain test)
@@ -278,23 +409,59 @@ python run_synth.py > synth_run.log   # ~8 min
 # 7. Decision layer: threshold fit on train, then eval + synthetic
 python controller.py > ctrl.log       # ~9 min
 
+# 8. Value-weighted measurement over the decisions from step 7
+python exposure.py > exposure.log     # ~1 min
+
 # supporting measurements for the findings above
 python findings.py > findings.log     # ~1 min
 ```
 
-Steps 3–7 are independent of each other except that step 7 reads the synthetic files written
-by step 5. Every number in this README appears in one of `retrieve.log`, `complete.log`,
-`gen.log`, `synth_run.log`, `ctrl.log`, `findings.log`, or the stdout of `score.py`.
+Steps 3–7 are independent except that step 7 reads the synthetic files from step 5, and step 8
+reads the audit files from step 7.
+
+### The explanation layer and the interface
+
+```bash
+cp .env.example .env                  # then add ONE key; .env is gitignored
+python investigate.py --rank-top 100 --rpm 10     # free tier is ~10 req/min; backs off on 429
+python export.py                                  # static JSON -> web/data/  (--synth for both)
+cd web && python -m http.server 8000              # then open http://localhost:8000/
+```
+
+`export.py` recomputes the summary and curve figures from the audit files directly — it never
+parses `exposure.log` — and asserts every figure against `exposure.py`'s own implementation
+before writing, failing loudly on any disagreement.
+
+### Checkers
+
+```bash
+python check.py                       # Playwright layout check at 1440x900, 1280x800, 1920x1080
+python check.py --width 1366          # one width
+```
+
+`check.py` serves `web/`, screenshots the cover, all four sections and the detail panel at each
+width into `screenshots/`, and asserts no horizontal overflow, nothing past the viewport edge,
+no text clipped by its own box, no truncated nav labels, and every queue amount fully visible
+above its magnitude bar. Failures name the element and the number that broke.
 
 ### Outputs
 
 `benchrec_report.md`, `retrieve_predictions*.csv`, `complete_predictions.csv`,
 `synth_transactions.csv` / `synth_solution.csv` / `synth_manifest.json` (plus `synth_small_*`),
-`controller_audit_eval.jsonl` (32,048 records), `controller_audit_synth.jsonl` (50,000
-records), `controller_exceptions_eval.csv` (3,133 rows), `controller_exceptions_synth.csv`
-(10,615 rows).
+`controller_audit_eval.jsonl` (32,048 records), `controller_audit_synth.jsonl` (50,000),
+`controller_exceptions_eval.csv` (3,133), `controller_exceptions_synth.csv` (10,615),
+`exceptions_ranked_eval.csv` (3,133 rows, 83.61B exposure), `exceptions_ranked_synth.csv`
+(10,615 rows, 633.76B), `investigations.jsonl`, and `web/data/` — 3,136 files totalling
+4.68 MB for eval, or 13,754 files if `--synth` is passed.
 
-The audit JSONL carries candidates considered, their scores and amount deltas, which triggers
-fired, the decision and the evidence, so any single decision can be reconstructed. Candidates
-are logged by `a_id` rather than by full allocation key; the key is derivable from the
-transactions file.
+Source data and anything derived from it row by row is gitignored; all of it regenerates from
+the commands above. The audit JSONL carries the candidates considered, their scores and amount
+deltas, which triggers fired, the decision and the evidence, so any single decision can be
+reconstructed.
+
+Every number in this README appears in `score.log`, `retrieve.log`, `complete.log`, `gen.log`,
+`synth_run.log`, `ctrl.log`, `exposure.log`, `export.log`, `investigate.log`, `findings.log`
+or `investigations.jsonl`, with two exceptions, both deliberate. A figure written as a
+difference (−2.300, −50.546, −4.821, and the coverage-for-precision trade in finding 6) is the
+subtraction of two logged numbers, and both operands are printed beside it. File sizes and
+counts (2,209,247 bytes, 13,754 files) are measured off disk.
