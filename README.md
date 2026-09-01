@@ -24,6 +24,102 @@ bought by abstaining on 34.4358% of the file, and it scores 0.0000% on every mul
 
 ---
 
+## Why there is no subset-sum solver here
+
+One-to-many reconciliation is commonly formulated as subset-sum: find the ledger rows whose
+amounts add to the statement amount. That formulation is well established, and reasonably so.
+
+- A J.P. Morgan paper from August 2025 formalises it as the **Subset Sum Matching Problem**,
+  and says of it: *"it is a critical part of an accounting process known as reconciliation,
+  where two sets of financial records are compared to ensure numerical accuracy and
+  agreement."* Two subsets match when the absolute difference of their sums is within a
+  tolerance. ([arXiv:2508.19218](https://arxiv.org/abs/2508.19218), J.P. Morgan Quantitative
+  Research and J.P. Morgan AI Research)
+- **Oracle Account Reconciliation** implements it. Its 1-to-Many matching rule selects the
+  subsystem transactions where *"Sum of Amounts in the subsystem is equal to Amount in the
+  source system"*.
+  ([Understanding the Transaction Matching Engine](https://docs.oracle.com/en/cloud/saas/account-reconcile-cloud/adarc/admin_trans_match_overview_matching_engine_100x0f827b25.html))
+- There are **patents** on it going back over a decade. US8548971B2, *Financial transaction
+  reconciliation* (Bank of America, filed 2012, granted 1 October 2013), performs *"subset sum
+  comparisons ... between positive subsets of the determined positive subset size and negative
+  subsets of the determined negative subset size."*
+  ([US8548971B2](https://patents.google.com/patent/US8548971B2/en))
+- **Commercial invoice-matching tools** sell it as their core decision logic — ReconcileIQ
+  describes *"Subset-sum search across open invoices for that contact. The algorithm tries
+  combinations."*
+  ([ReconcileIQ](https://bankreconciler.app/blogInvoicePaymentMatching))
+
+We scoped a bounded subset-sum solver over the top-5 candidates before measuring anything.
+Then we measured.
+
+### The regimes
+
+Every multi-key group — one statement row answered by several ledger keys — falls into one of
+three regimes. **Partition**: the ledger amounts sum to the statement amount. **Repeat**: at
+least one ledger row already carries the statement's exact amount. **Neither**.
+
+| regime | train (`matchId` groups) | eval (reconstructed) |
+|---|---|---|
+| repeat | 83.18% | 79.09% |
+| neither | 14.17% | 17.82% |
+| **partition** | **2.65%** | **3.09%** |
+
+*6,678 multi-key rows on train, 1,779 on eval.* Train groups come from the `matchId` column.
+Eval has no `matchId` — it is blank on all 69,171 rows — so a group's ledger rows are
+reconstructed from the keys its label names. Validated against train's own `matchId` groups,
+that reconstruction never loses a row, over-collects on 35.58% of groups, and leaves the regime
+label unchanged on **99.22%** of rows. The disagreements lean toward reading a partition as a
+repeat, so eval's repeat share is if anything a slight over-estimate. Measured by
+`findings.py`; see `findings.log`.
+
+**On this data the partition regime describes 2.65% of multi-key cases on train and 3.09% on
+eval.** The dominant case is repeat, where several ledger rows already carry the statement's
+exact amount.
+
+### What that looks like
+
+Eval `B_id 43581112882`, five ledger rows against a statement amount of 840,311.46:
+
+```
+statement rows                          ledger rows
+  43581112882   DR   840311.46            551786750288   CR   840311.46   K2
+ 840304890183   DR   840311.46            594577151758   CR   840311.46   K1
+ 539698351214   DR   840311.46            173495543687   CR   840311.46   K3
+ 825752293088   DR   840311.46            244189094128   CR   840311.46   K4
+ 839660346265   DR   840311.46            517040781446   CR   840311.46   K5
+
+statement amount                840,311.46
+sum of all ledger amounts     4,201,557.30   a partition would equal the statement
+ledger rows at that amount           5 of 5   a repeat means all of them
+```
+
+The target set is all five keys. A solver looking for the subset that sums to 840,311.46 has
+nothing to find: the sum is 4,201,557.30, and every single-row subset is an equally good
+answer.
+
+### The consequence
+
+When every candidate carries the same amount, arithmetic gives no signal at all. So the
+architecture is **retrieval and ranking over candidates, not an arithmetic solver** — the
+discriminating evidence is textual, in the reference and attribute fields, and the job of the
+model is to rank. Amount blocking still earns its place, but as a filter that pulls the group
+together rather than as the thing that distinguishes its members: it cuts the pool from 6,380.9
+candidates per query to a mean of 14.08, and then stops helping.
+
+### The boundary condition
+
+Partition is a real regime, and this is not a claim that subset-sum is useless. Razorpay's own
+settlement documentation describes exactly it: when the live balance is short, *"we will only
+choose the ones that add up to your current live balance"*, and the remaining transactions roll
+into the next settlement cycle — a bank credit corresponding to a subset of payments that fit
+the available balance, with the remainder deferred.
+([About Settlements](https://razorpay.com/docs/payments/settlements/))
+
+The claim is narrower: which regime you are in is an empirical question, it should be measured
+before the algorithm is chosen, and in this benchmark the answer was not the one we assumed.
+
+---
+
 ## What the system does
 
 A bank statement line arrives. Something in the ledger should account for it — sometimes one
@@ -108,62 +204,19 @@ embed a date, so a key seen in train can essentially never be reused verbatim in
 
 ### 1. Multi-key groups repeat rather than partition
 
-**Assumed.** A multi-key label means several ledger entries that sum to the statement amount.
-That framing makes this a subset-sum problem, and a solver over the top-5 was scoped.
+**Assumed.** A multi-key label means several ledger entries that sum to the statement amount,
+which makes this a subset-sum problem. A bounded solver over the top-5 was scoped.
 
-**Measured** (`findings.log`, train, 6,678 multi-key B rows):
+**Measured.** Partition is 2.65% of multi-key groups on train and 3.09% on eval. The dominant
+regime is repeat, at 83.18% and 79.09%, where the ledger rows already carry the statement's
+exact amount and arithmetic cannot separate them.
 
-| regime | share of multi-key B rows |
-|---|---|
-| repeat | 83.18% |
-| neither | 14.17% |
-| partition | 2.65% |
+**Changed.** The solver was dropped before being written, in favour of a classifier over
+candidate ranks. Worth **+1.8036 points** of overall match rate.
 
-And the distribution of *what fraction of the A rows in a group carry B's exact amount* has
-its mass at the top: **70.23% of multi-key rows have every A row sitting at B's exact
-amount.** Worked example, `matchId 184541000741` — 6 A rows, 6 B rows, 6 distinct keys:
-
-```
-B rows (external statement)          A rows (internal ledger)
-  160725871107  DR  203235.00          883399681180  CR  203235.00  K1
-  670730959472  DR  203235.00          434384224841  CR  203235.00  K2
-  996827316754  DR  203235.00          680184429448  CR  203235.00  K3
-  293269702131  DR  203235.00          444196382816  CR  203235.00  K4
-  123784971159  DR  203235.00          258049165276  CR  203235.00  K5
-  462933939786  DR  203235.00          991589274456  CR  203235.00  K6
-
-B amount                203,235.00
-sum of all A amounts  1,219,410.00   (a partition would equal B)
-A rows at B's amount        6 of 6   (a repeat means all of them)
-target set            [K1, K2, K3, K4, K5, K6]
-```
-
-**Changed.** The subset-sum solver was dropped before being written. `complete.py` confirmed
-it independently: the top-1's A rows alone equal B's amount exactly 63.14% of the time, all
-gold keys sum to B's amount exactly only 2.59% of the time, and adding the extra rows moves
-the sum *closer* to B in only 2.25% of cases. The signal that does work is ranking — the
-rank-2 candidate is a genuinely additional gold key 92.52% of the time.
-
-**Consequence.** A classifier over candidate ranks, not an arithmetic solver. Worth
-**+1.8036 points** of overall match rate. A subset-sum solver would have been the wrong tool
-applied to 2.65% of the cases.
-
-**Does it hold on eval?** Mostly answerable, and the part that isn't is worth stating. `matchId`
-is blank on all 69,171 eval rows, so group membership is not given; the A rows of a group can
-only be reconstructed from the keys the label names. Validated against train's `matchId`, that
-reconstruction never loses a row but over-collects on 35.58% of groups — yet the regime label
-survives it, agreeing on **99.22%** of rows. So the split is reportable:
-
-| regime | train (matchId groups) | eval (reconstructed) | difference |
-|---|---|---|---|
-| repeat | 83.18% | 79.09% | −4.09 |
-| neither | 14.17% | 17.82% | +3.65 |
-| partition | 2.65% | 3.09% | +0.44 |
-
-The fraction-of-A-rows distribution is **not** reportable for eval and `findings.py` refuses to
-print it: the extra rows dilute the fraction, moving the 1.0 bucket by 21.97 points on train.
-Recovering it would need `matchId`, or any per-row group identifier, in the eval file. The
-headline claim holds on both splits and does not depend on the reconstruction being exact.
+**In full:** [Why there is no subset-sum solver here](#why-there-is-no-subset-sum-solver-here)
+— the citations for the formulation, the regime table for both splits, the validated eval
+reconstruction, the worked example, and the boundary condition.
 
 ### 2. Float precision at 6.6 billion
 
@@ -480,7 +533,9 @@ reconstructed.
 
 Every number in this README appears in `score.log`, `retrieve.log`, `complete.log`, `gen.log`,
 `synth_run.log`, `ctrl.log`, `exposure.log`, `export.log`, `investigate.log`, `findings.log`
-or `investigations.jsonl`, with two exceptions, both deliberate. A figure written as a
+or `investigations.jsonl`, with three exceptions, all deliberate. A figure written as a
 difference (−2.300, −50.546, −4.821, and the coverage-for-precision trade in finding 6) is the
 subtraction of two logged numbers, and both operands are printed beside it. File sizes and
-counts (211,923 and 2,209,247 bytes) are measured off disk.
+counts (211,923 and 2,209,247 bytes) are measured off disk. And the identifiers in *Why there
+is no subset-sum solver here* — arXiv:2508.19218, US8548971B2, the dates — belong to the cited
+external sources, each linked and quoted verbatim from the source itself.
