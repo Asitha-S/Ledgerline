@@ -427,6 +427,157 @@ proposed a match: 58 of 58 clean.
 
 ---
 
+## What precision does not tell you about the balance
+
+Match rate and precision are both sign-blind. They count rows right and rows wrong, and a
+wrong row counts the same whether it moved value one way, the other way, or not at all. The
+constraint an Indian payment aggregator actually operates under is not a per-row one: clause
+8.6 of the RBI guidelines is a statement about an **aggregate balance at the end of the day**
+([RBI, 17 March 2020](https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=11822), quoted
+in full [above](#why-this-matters-to-a-payment-company)). So row-level precision and the
+regulatory condition are not the same measurement, and the question is whether the first
+implies the second: across 28,915 auto-closed decisions, do the signed errors cancel or
+compound? Measured by `drift.py`; see `drift.log`.
+
+### The definition, and where it stops being definable
+
+For each auto-closed row, `drift = (ledger value the controller attached) − (ledger value the
+label names)`, in integer cents. Amounts are used with the sign the dataset stores — a
+statement debit positive, a credit negative, a correctly matched ledger row carrying the same
+sign as its statement row — and nothing is negated or `abs()`'d anywhere. Positive drift means
+more ledger value was attached than the label names.
+
+**This is mis-attribution, not loss.** Attaching a statement row to the wrong key does not
+revalue anything: the statement value is posted either way, one account is overstated and
+another understated by the same amount, and a ledger-wide total nets to zero by construction.
+Drift measures value attached to accounts that should not have received it. The full-value
+figure for a wrong posting is `exposure.py`'s.
+
+Where the two key sets agree, drift is exactly zero and needs no lookup — the same key set
+carries the same value whichever ledger rows it denotes — so all drift originates in the 472
+rows of 28,915 where they differ. Of those 472, **207 are exact and 265 are bounded rather
+than exact**: pricing a key needs the amount of the ledger row it denotes, 2,566 of 22,779 eval
+allocation keys (**11.265%**) are carried by rows of *different* amounts, and `matchId` is
+blank on all 69,171 eval rows, so the dataset does not say which one a label meant. Those rows
+get a `[min, max]` interval. No interval is collapsed to a point anywhere in `drift.log`, and
+a bounded row is never counted as zero-drift or as non-zero.
+
+### The measured answer: the errors do not cancel
+
+On the exact rows, eval nets **−4.01B against a gross of 4.97B — 80.827%**, with 952.07M
+cancelled. Cancellation is limited; the errors substantially compound. Adding the bounded rows,
+the net over all 28,915 auto-closed rows lies in `[−11.35B, 6.45B]`.
+
+Synthetic looks different and the difference is instructive. Its raw ratio is **27.763%**,
+which reads like heavy cancellation. It is not. The raw net treats a statement debit and a
+statement credit as opposites, so it cancels debits against credits rather than errors against
+errors. Normalised by each row's own direction — `drift × sign(B amount)` — the same batch is
+**99.923%**, essentially no cancellation at all, with 499 of 528 non-zero rows under-attaching.
+
+| | net | gross | raw net/gross | direction-normalised |
+|---|---|---|---|---|
+| BenchRec eval, exact rows | −4.01B | 4.97B | 80.827% | 68.821% |
+| synthetic, all rows exact | 15.13B | 54.49B | 27.763% | 99.923% |
+
+The mechanism is in the stratum split. An auto-close posts exactly one key — this is
+structural, not incidental, since `controller.py` escalates whenever set completion adds a key
+(`t_add`), so a multi-key answer can never reach auto-close. A multi-key label therefore cannot
+be answered completely, and on synthetic **499 of 499** multi-key rows under-attach. On eval it
+is 112 of 113: not a law, because one large ledger row can still exceed the sum of several
+small ones, so `drift.py` computes that direction rather than asserting it. Blank labels
+over-attach without exception, and that one *is* structural — the label names no ledger value,
+so drift is the whole posted amount.
+
+### The blind spot
+
+**15.459%** of exact wrong postings on eval have drift of exactly zero (32 of 207), and
+**14.563%** on synthetic (90 of 618). The cause is the repeat regime from
+[the section above](#why-there-is-no-subset-sum-solver-here): where several ledger rows already
+carry the statement's exact amount, choosing the wrong one produces zero drift by construction.
+The posting is wrong and the totals agree.
+
+The clearest case is the `≥ 100M` bucket on eval, which contains three wrong postings and nets
+to exactly zero:
+
+```
+B_id                 |B amount|         drift   label
+535742045803           949.00M          0.00    single-key
+132562348380           358.73M       +358.73M   blank
+234837519256           358.73M       −358.73M   blank
+
+net 0.00     gross 717.46M     value mis-attributed 1.67B
+```
+
+Two blank-label rows of identical magnitude and opposite sign cancel; the third was wrong onto
+an equal-valued key and contributed nothing to begin with. A balance check over that bucket
+reports that nothing happened.
+
+### The gate: tested, and not ruled out
+
+If those rows were identifiable at decision time, a second control could escalate them without
+consulting a label. The hypothesis was that they sit in pools offering more than one
+exact-amount candidate. Tested by `driftgate.py`; see `driftgate.log`.
+
+**How you count candidates decides the answer, so both counts are reported.** An answer names
+keys, not rows, and five candidate rows carrying one allocation key are one choice rather than
+five. Counting distinct keys, 7.387% of eval auto-closed rows offer more than one exact-amount
+candidate; counting rows, 38.627% do.
+
+| eval gate | escalates | invisible errors caught | correct given up | coverage | precision | pts/pt |
+|---|---|---|---|---|---|---|
+| exact keys > 1 | 2,136 | 31 of 32 | 1,941 | 83.559% | 98.966% | 11.1 |
+| exact rows > 1 | 11,169 | 32 of 32 | 10,760 | 55.373% | 99.645% | 27.3 |
+| `dup_ref` | 9,344 | 2 of 32 | 9,102 | 61.068% | 98.825% | 63.8 |
+
+Against a baseline of 90.224% coverage and 98.368% precision. `pts/pt` is points of coverage
+surrendered per point of precision gained.
+
+**The signal is real.** 31 of 32 invisible errors sit in multi-key pools against a 7.387% base
+rate — **13.11x lift** — and on synthetic, 88 of 90 against 9.999%, 9.78x. The row-level count
+catches one more error for five times the work, and that extra catch is an artefact of how
+candidates are recorded rather than anything about the decision.
+
+**And the price is not obviously refusable.** The key-level gate costs 6.665 points of coverage
+for +0.598 of precision — **11.1 points per point**, against the **31.4** this project refused
+for the digit-run filter (finding 3) and refused again in finding 6. On synthetic it is 5.4.
+By the yardstick this project has used consistently, the measurement does not rule this gate
+out. What it costs is 2,136 more rows in a queue someone works before a deadline, and whether
+that is affordable is a capacity question this measurement cannot answer. It has not been
+built, and `controller.py` is unchanged.
+
+**The residue is small but real.** One eval row (`287742256750`, 54.25M) and two synthetic rows
+had exactly one exact-amount key: the system saw one exact candidate, took it, was wrong, and
+the right key carried the same value from *outside* the candidate set. From inside the pool
+those rows look like unambiguous single hits, and no pool-structure rule can see them.
+
+`duplicate_reference_among_candidates` is the weakest of the three on eval, firing on 2 of the
+32 at 63.8 points per point — worse than the trade already refused, so it is not usable as a
+standalone gate. On synthetic it fires on 88 of 90. The two batches disagree about it
+completely, which is itself a reason not to build on it. It is already used in the controller,
+under the narrower condition of co-occurring with set completion.
+
+### The mechanism, and why it is one property rather than two
+
+On eval, **every candidate that reaches the top-5 matches the statement amount to the cent** —
+28,915 of 28,915 auto-closed rows and 3,133 of 3,133 escalated ones. Amount blocking cuts the
+pool to a mean of 14.72 candidates, median 1 (`retrieve.log`), and it does so *by* amount. So
+inside the pool, amount carries no discriminating information: it has already been spent
+selecting the pool.
+
+That is the same property twice. The amount equality that makes blocking effective is exactly
+what makes the resulting errors invisible to a balance check — a wrong pick among
+equal-amount candidates cannot move a total. One property does both, which is why the blind
+spot is not a bug to be fixed so much as a consequence of the retrieval design.
+
+### What is not being claimed
+
+Not that balance checks are useless. **84.541%** of exact wrong rows on eval do move value
+(175 of 207) and would be visible to one, as would 85.437% on synthetic. The claim is narrower
+and it is a measurement: a balance control is partial, the uncovered share is computable, and
+on this data it is 15.459% of the errors a reviewer would care about — not a rounding detail.
+
+---
+
 ## Evaluation
 
 ### Two precision measures
@@ -555,12 +706,16 @@ python exposure.py > exposure.log     # ~1 min
 # 9. Signed balance drift over the same decisions — direction and cancellation
 python drift.py > drift.log           # ~1 min
 
+# 10. Whether the drift blind spot can be gated at decision time, and what that costs
+python driftgate.py > driftgate.log   # ~1 min
+
 # supporting measurements for the findings above
 python findings.py > findings.log     # ~1 min
 ```
 
-Steps 3–7 are independent except that step 7 reads the synthetic files from step 5, and steps 8
-and 9 read the audit files from step 7.
+Steps 3–7 are independent except that step 7 reads the synthetic files from step 5, and steps
+8–10 read the audit files from step 7. Step 10 imports step 9 rather than re-deriving it, so the
+two cannot disagree about what drift means.
 
 ### The explanation layer and the interface
 
@@ -604,10 +759,10 @@ deltas, which triggers fired, the decision and the evidence, so any single decis
 reconstructed.
 
 Every number in this README appears in `score.log`, `retrieve.log`, `complete.log`, `gen.log`,
-`synth_run.log`, `ctrl.log`, `exposure.log`, `drift.log`, `export.log`, `investigate.log`,
-`findings.log`
-or `investigations.jsonl`, with three exceptions, all deliberate. A figure written as a
-difference (−2.300, −50.546, −4.821, and the coverage-for-precision trade in finding 6) is the
+`synth_run.log`, `ctrl.log`, `exposure.log`, `drift.log`, `driftgate.log`, `export.log`,
+`investigate.log`, `findings.log` or `investigations.jsonl`. That is checked mechanically over
+every numeric token in the file, and what it does not resolve falls into three deliberate
+classes. A figure written as a difference (−2.300, −50.546, −4.821, and the coverage-for-precision trade in finding 6) is the
 subtraction of two logged numbers, and both operands are printed beside it. File sizes and
 counts (211,923 and 2,209,247 bytes) are measured off disk. And the identifiers, dates and
 figures in the two cited sections — *Why there is no subset-sum solver here* and *Why this

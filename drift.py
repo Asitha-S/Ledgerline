@@ -170,6 +170,9 @@ def load_batch(data_dir, audit_file, tx_file, solution_file):
                 if k is not None:
                     cand_price.setdefault(k, int(c["amount_cents"]))
 
+            cand_keys = {aid_key.get(str(c["a_id"])) for c in (d.get("candidates") or [])}
+            cand_keys.discard(None)
+
             only_p = posted - gold
             only_g = gold - posted
 
@@ -207,6 +210,18 @@ def load_batch(data_dir, audit_file, tx_file, solution_file):
                 "stratum": ("blank" if not gold else
                             "single-key" if len(gold) == 1 else "multi-key"),
                 "dup_ref": bool(d.get("duplicate_reference_among_candidates")),
+                "n_cands": len(d.get("candidates") or []),
+                "n_exact_cand": sum(1 for c in (d.get("candidates") or [])
+                                    if c.get("exact_amount")),
+                # the decision is over KEYS, so candidate rows sharing one key are
+                # one choice, not several
+                "n_exact_keys": len({aid_key.get(str(c["a_id"]))
+                                     for c in (d.get("candidates") or [])
+                                     if c.get("exact_amount")} - {None}),
+                "pool_size": int(d.get("pool_size") or 0),
+                "top1_score": d.get("top1_score"),
+                "margin": d.get("margin"),
+                "gold_in_pool": bool(gold & cand_keys),
                 "exception_class": d.get("exception_class") or "",
                 "n_triggers": len(d.get("triggers") or []),
                 "drift_lo": lo,
@@ -544,6 +559,11 @@ def section_blind_spot(df):
          f"of {len(ex_bad):,} exact wrong rows ({_pct(len(zero), len(ex_bad))})")
     _log(f"  wrong postings whose interval straddles zero  {len(straddle):,} "
          f"of {len(bad) - len(ex_bad):,} bounded wrong rows")
+    vis = len(ex_bad) - len(zero)
+    _log(f"  wrong postings that DO move value             {vis:,} "
+         f"of {len(ex_bad):,} exact wrong rows ({_pct(vis, len(ex_bad))})")
+    _log("    — the complement, and the share a balance check would see. A balance")
+    _log("      control is partial here, not useless.")
     _log()
     _log(f"  value mis-attributed by those zero-drift rows  "
          f"{_money(int(zero['abs_b'].sum()))}")

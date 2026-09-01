@@ -1,0 +1,264 @@
+
+========================================================================================================
+driftgate.py — can the drift blind spot be gated at decision time?
+measurement only: controller.py untouched, no threshold fitted, nothing re-decided
+========================================================================================================
+
+========================================================================================================
+POOL STRUCTURE vs DRIFT OUTCOME — BenchRec eval
+========================================================================================================
+
+  auto-closed rows              28,915
+  candidate rows recorded       {1: 17746, 2: 1354, 3: 548, 4: 302, 5: 8965}
+  exact-amount candidate ROWS   {1: 17746, 2: 1354, 3: 548, 4: 302, 5: 8965}
+  exact-amount candidate KEYS   {1: 26779, 2: 1253, 3: 431, 4: 224, 5: 228}
+  duplicate_reference set       9,344 (32.315%)
+
+  more than one exact ROW  38.627%      more than one exact KEY  7.387%
+  rows where every recorded candidate matched the amount exactly   28,915 of 28,915
+    On this batch the exact_amount flag adds nothing to the candidate count:
+    amount blocking is tight enough that nothing reaches the top-5 without
+    matching to the cent. Inside the pool, amount carries no discriminating
+    information at all — it has already been spent selecting the pool.
+
+   exact keys  dup_ref     rows   correct   wrong  w drift=0  w drift!=0  w bounded
+  ---------------------------------------------------------------------------------
+            1    False   17,938    17,874      64          0          53         11
+            1     True    8,841     8,628     213          1          43        169
+            2    False      901       832      69         12          30         27
+            2     True      352       341      11          0           7          4
+            3    False      315       266      49          7          18         24
+            3     True      116       112       4          0           2          2
+            4    False      201       181      20          4           5         11
+            4     True       23        14       9          1           3          5
+            5    False      216       188      28          7          13          8
+            5     True       12         7       5          0           1          4
+  ---------------------------------------------------------------------------------
+          all            28,915    28,443     472         32         175        265
+
+  'w bounded' are wrong postings whose drift drift.py could only bound, because
+  a key in the symmetric difference is carried by ledger rows of several amounts.
+  Whether those are zero-drift is not determined by the data, so they are never
+  counted as zero and never counted as non-zero.
+
+--------------------------------------------------------------------------------------------------------
+DO THE INVISIBLE ERRORS CONCENTRATE ON AMBIGUOUS POOLS?
+--------------------------------------------------------------------------------------------------------
+
+  zero-drift wrong postings (invisible to a balance check)   32
+
+  by exact-amount KEYS    >1 on 31 of 32 (96.875%)   base 7.387%   lift 13.11x
+  by exact-amount ROWS    >1 on 32 of 32 (100.000%)   base 38.627%   lift 2.59x
+  exactly one exact KEY (no pool signal at all)  1 of 32
+
+  dup_ref set on 2 of 32 (6.250%)   base 32.315%
+
+  label strata   {'single-key': 29, 'multi-key': 3}
+  gold key present in the recorded top-5   12 of 32
+    For the rest the correct key was never a candidate, so no re-ranking
+    could have fixed them. Escalation is the only available remedy.
+
+--------------------------------------------------------------------------------------------------------
+PRICING THE GATES   (applied to decisions already made, nothing refitted)
+--------------------------------------------------------------------------------------------------------
+
+  current   coverage 90.224%   precision 98.368%   (28,915 of 32,048 auto-closed, 28,443 correct)
+
+  gate              escalates  wrong   d=0   d!=0   bnd  correct esc  ok/wrong   coverage  precision   pts/pt
+  -----------------------------------------------------------------------------------------------------------
+  exact keys > 1        2,136    195    31     79    85        1,941      10.0    83.559%    98.966%     11.1
+  exact rows > 1       11,169    409    32    122   255       10,760      26.3    55.373%    99.645%     27.3
+  dup_ref               9,344    242     2     56   184        9,102      37.6    61.068%    98.825%     63.8
+  keys>1 or dup        10,977    408    32    122   254       10,569      25.9    55.972%    99.643%     26.9
+  keys>1 and dup          503     29     1     13    15          474      16.3    88.655%    98.441%     21.5
+
+  Baseline coverage 90.224%, precision 98.368%.
+  'ok/wrong'  correct auto-closes given up per wrong posting caught.
+  'pts/pt'    points of coverage surrendered per point of precision gained.
+  'bnd'       wrong postings of undetermined drift, caught incidentally; real
+              errors, but not evidence about the blind spot either way.
+
+  For scale: this project refused the digit-run filter at 31.4 points per point
+  (+1.0383 precision for 32.5615 match rate, retrieve.log; finding 3). That is a
+  stated yardstick, not a fitted one, and a reader may disagree with it.
+
+--------------------------------------------------------------------------------------------------------
+THE RESIDUE — invisible errors no pool-structure gate could catch
+--------------------------------------------------------------------------------------------------------
+
+  invisible errors with exactly one exact-amount KEY   1 of 32 (3.125%)
+  ... and dup_ref unset as well                        0
+
+  B_id                        |B|  keys  rows     pool     top1   margin   dup  gold in top5  label
+  ----------------------------------------------------------------------------------------------------------
+  287742256750             54.25M     1     5        5   0.0007   0.0000  True         False  single-key
+
+  value mis-attributed by the residue   54.25M
+  gold key was in the recorded top-5    0 of 1
+
+  One exact-amount key, taken, and wrong, with the right key carrying the same
+  value from outside the candidate set. From inside the pool the row looks like
+  an unambiguous single hit. Pool structure cannot see that.
+
+--------------------------------------------------------------------------------------------------------
+VERDICT
+--------------------------------------------------------------------------------------------------------
+
+  1. Is the blindness predictable without labels?
+     YES. 31 of 32 invisible errors (96.88%) sit in pools
+     offering more than one exact-amount key, against a 7.387% base
+     rate — 13.11x lift. The signal is there at decision time.
+
+  2. What would it cost?
+     2,136 rows escalated, 1,941 of them correct — 10.0 correct
+     auto-closes given up per wrong posting caught. Coverage 90.224% -> 83.559%
+     (-6.665 pts), precision 98.368% -> 98.966% (+0.598 pts).
+
+     NOT REFUSED ON PRICE. At 11.1 points per point this is
+     materially cheaper than the 31.4 the project refused. It still
+     costs 6.665 points of coverage — 2,136 more rows into a queue
+     someone works before a deadline. That is a capacity question, and this
+     script does not answer it. What it can say is that the measurement does
+     not rule the gate out.
+
+  3. What the gate would not buy. Escalating these rows surfaces them for review;
+     it does not resolve them. Where the correct key was never in the top-5,
+     review is the only remedy anyway — 20 of 32 invisible errors are in
+     that position.
+
+========================================================================================================
+POOL STRUCTURE vs DRIFT OUTCOME — synthetic 50,000-group
+========================================================================================================
+
+  auto-closed rows              39,385
+  candidate rows recorded       {1: 2, 2: 6, 3: 15, 4: 28, 5: 39334}
+  exact-amount candidate ROWS   {1: 35447, 2: 3509, 3: 315, 4: 78, 5: 36}
+  exact-amount candidate KEYS   {1: 35447, 2: 3509, 3: 315, 4: 78, 5: 36}
+  duplicate_reference set       4,983 (12.652%)
+
+  more than one exact ROW  9.999%      more than one exact KEY  9.999%
+  rows where every recorded candidate matched the amount exactly   39 of 39,385
+
+   exact keys  dup_ref     rows   correct   wrong  w drift=0  w drift!=0  w bounded
+  ---------------------------------------------------------------------------------
+            1    False   31,500    31,463      37          2          35          0
+            1     True    3,947     3,946       1          0           1          0
+            2    False    2,582     2,366     216          0         216          0
+            2     True      927       832      95         81          14          0
+            3    False      225        98     127          0         127          0
+            3     True       90        55      35          7          28          0
+            4    False       64         5      59          0          59          0
+            4     True       14         2      12          0          12          0
+            5    False       31         0      31          0          31          0
+            5     True        5         0       5          0           5          0
+  ---------------------------------------------------------------------------------
+          all            39,385    38,767     618         90         528          0
+
+  'w bounded' are wrong postings whose drift drift.py could only bound, because
+  a key in the symmetric difference is carried by ledger rows of several amounts.
+  Whether those are zero-drift is not determined by the data, so they are never
+  counted as zero and never counted as non-zero.
+
+--------------------------------------------------------------------------------------------------------
+DO THE INVISIBLE ERRORS CONCENTRATE ON AMBIGUOUS POOLS?
+--------------------------------------------------------------------------------------------------------
+
+  zero-drift wrong postings (invisible to a balance check)   90
+
+  by exact-amount KEYS    >1 on 88 of 90 (97.778%)   base 9.999%   lift 9.78x
+  by exact-amount ROWS    >1 on 88 of 90 (97.778%)   base 9.999%   lift 9.78x
+  exactly one exact KEY (no pool signal at all)  2 of 90
+
+  dup_ref set on 88 of 90 (97.778%)   base 12.652%
+
+  label strata   {'single-key': 88, 'multi-key': 2}
+  gold key present in the recorded top-5   88 of 90
+    For the rest the correct key was never a candidate, so no re-ranking
+    could have fixed them. Escalation is the only available remedy.
+
+--------------------------------------------------------------------------------------------------------
+PRICING THE GATES   (applied to decisions already made, nothing refitted)
+--------------------------------------------------------------------------------------------------------
+
+  current   coverage 78.770%   precision 98.431%   (39,385 of 50,000 auto-closed, 38,767 correct)
+
+  gate              escalates  wrong   d=0   d!=0   bnd  correct esc  ok/wrong   coverage  precision   pts/pt
+  -----------------------------------------------------------------------------------------------------------
+  exact keys > 1        3,938    580    88    492     0        3,358       5.8    70.894%    99.893%      5.4
+  exact rows > 1        3,938    580    88    492     0        3,358       5.8    70.894%    99.893%      5.4
+  dup_ref               4,983    148    88     60     0        4,835      32.7    68.804%    98.634%     49.1
+  keys>1 or dup         7,885    581    88    493     0        7,304      12.6    63.000%    99.883%     10.9
+  keys>1 and dup        1,036    147    88     59     0          889       6.0    76.698%    98.772%      6.1
+
+  Baseline coverage 78.770%, precision 98.431%.
+  'ok/wrong'  correct auto-closes given up per wrong posting caught.
+  'pts/pt'    points of coverage surrendered per point of precision gained.
+  'bnd'       wrong postings of undetermined drift, caught incidentally; real
+              errors, but not evidence about the blind spot either way.
+
+  For scale: this project refused the digit-run filter at 31.4 points per point
+  (+1.0383 precision for 32.5615 match rate, retrieve.log; finding 3). That is a
+  stated yardstick, not a fitted one, and a reader may disagree with it.
+
+--------------------------------------------------------------------------------------------------------
+THE RESIDUE — invisible errors no pool-structure gate could catch
+--------------------------------------------------------------------------------------------------------
+
+  invisible errors with exactly one exact-amount KEY   2 of 90 (2.222%)
+  ... and dup_ref unset as well                        2
+
+  B_id                        |B|  keys  rows     pool     top1   margin   dup  gold in top5  label
+  ----------------------------------------------------------------------------------------------------------
+  603070056981            264.88K     1     1        5   0.0136   0.0099 False         False  multi-key
+  548224709411              3.58K     1     1        5   0.0705   0.0481 False         False  multi-key
+
+  value mis-attributed by the residue   268.46K
+  gold key was in the recorded top-5    0 of 2
+
+  One exact-amount key, taken, and wrong, with the right key carrying the same
+  value from outside the candidate set. From inside the pool the row looks like
+  an unambiguous single hit. Pool structure cannot see that.
+
+--------------------------------------------------------------------------------------------------------
+VERDICT
+--------------------------------------------------------------------------------------------------------
+
+  1. Is the blindness predictable without labels?
+     YES. 88 of 90 invisible errors (97.78%) sit in pools
+     offering more than one exact-amount key, against a 9.999% base
+     rate — 9.78x lift. The signal is there at decision time.
+
+  2. What would it cost?
+     3,938 rows escalated, 3,358 of them correct — 5.8 correct
+     auto-closes given up per wrong posting caught. Coverage 78.770% -> 70.894%
+     (-7.876 pts), precision 98.431% -> 99.893% (+1.462 pts).
+
+     NOT REFUSED ON PRICE. At 5.4 points per point this is
+     materially cheaper than the 31.4 the project refused. It still
+     costs 7.876 points of coverage — 3,938 more rows into a queue
+     someone works before a deadline. That is a capacity question, and this
+     script does not answer it. What it can say is that the measurement does
+     not rule the gate out.
+
+  3. What the gate would not buy. Escalating these rows surfaces them for review;
+     it does not resolve them. Where the correct key was never in the top-5,
+     review is the only remedy anyway — 2 of 90 invisible errors are in
+     that position.
+
+========================================================================================================
+ACROSS BOTH BATCHES
+========================================================================================================
+
+  batch                        recall    lift   pts/pt  d coverage  d precision   verdict
+  -------------------------------------------------------------------------------------
+  BenchRec eval                96.88%  13.11x     11.1     -6.665      +0.598      open
+  synthetic 50,000-group       97.78%   9.78x      5.4     -7.876      +1.462      open
+
+  BenchRec eval is the in-domain batch and the source of the headline
+  figures; the synthetic batch is generated data whose pool structure this
+  project chose, so it can confirm a mechanism but cannot settle a price.
+  Where the two disagree about affordability, eval governs.
+
+========================================================================================================
+done
+========================================================================================================

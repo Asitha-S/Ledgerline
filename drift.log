@@ -193,6 +193,9 @@ WHAT THIS MEASUREMENT IS BLIND TO
 
   wrong postings with drift EXACTLY zero        32 of 207 exact wrong rows (15.459%)
   wrong postings whose interval straddles zero  128 of 265 bounded wrong rows
+  wrong postings that DO move value             175 of 207 exact wrong rows (84.541%)
+    — the complement, and the share a balance check would see. A balance
+      control is partial here, not useless.
 
   value mis-attributed by those zero-drift rows  1.04B
     — invisible to any balance check, because the wrong key carries the same
@@ -393,6 +396,9 @@ WHAT THIS MEASUREMENT IS BLIND TO
 
   wrong postings with drift EXACTLY zero        90 of 618 exact wrong rows (14.563%)
   wrong postings whose interval straddles zero  0 of 0 bounded wrong rows
+  wrong postings that DO move value             528 of 618 exact wrong rows (85.437%)
+    — the complement, and the share a balance check would see. A balance
+      control is partial here, not useless.
 
   value mis-attributed by those zero-drift rows  4.75B
     — invisible to any balance check, because the wrong key carries the same
