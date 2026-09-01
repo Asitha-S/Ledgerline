@@ -7,20 +7,32 @@ transactions are auto-closed at 98.368% accuracy.** The remaining 3,133 are esca
 human holding 83.61B USD of exposure, ranked so the largest is reviewed first. The batch of
 32,048 records is processed in 53.91 s, or 594.4 records per second.
 
-Alongside the dataset in this folder is `MatcherByChatGPT_submission.csv`. Scored with the
-same scorer:
+Closed blind — every proposed answer posted without review, which is the only thing
+comparable to a plain prediction file — it is **91.7936% match at 95.4665% precision**.
 
-| | match rate | precision | abstention |
+Alongside the dataset in this folder is `MatcherByChatGPT_submission.csv`. Scored with the same
+scorer, on the same question — post every answer, abstain where you have none:
+
+| every answer posted blind | match rate | precision | abstention |
 |---|---|---|---|
 | MatcherByChatGPT_submission.csv | 62.4501% | 95.2503% | 34.4358% |
-| this system, closed blind | 91.7936% | 95.4665% | — |
-| this system, as a controller | 90.224% auto-closed | 98.368% on what it closed | 9.776% escalated |
+| this system | 91.7936% | 95.4665% | 3.8474% |
 
-**That file is a prediction file found next to the dataset. It is not an official baseline,
-not a published result, and carries no provenance.** It is here because it is the only other
-answer set in the folder, and because it makes a useful point: its 95.2503% precision is
-bought by abstaining on 34.4358% of the file, and it scores 0.0000% on every multi-key label
-(884 predicted, 0 correct). Treat it as a reference point, not as the state of the art.
+The controller answers a different question, so its figures are not comparable to the table
+above and are kept separate. **98.368% is accuracy on the subset it chose to close, not on the
+file**; the 95.4665% row is the one to compare against 95.2503%.
+
+| as a controller | |
+|---|---|
+| auto-closed without review | 28,915 of 32,048 — 90.224% |
+| correct among those | 98.368% |
+| escalated to a human | 3,133 — 9.776% |
+
+**That prediction file was found next to the dataset. It is not an official baseline, not a
+published result, and carries no provenance.** It is here because it is the only other answer
+set in the folder, and because it makes a useful point: its 95.2503% precision is bought by
+abstaining on 34.4358% of the file, and it scores 0.0000% on every multi-key label (884
+predicted, 0 correct). Treat it as a reference point, not as the state of the art.
 
 ---
 
@@ -30,14 +42,15 @@ One-to-many reconciliation is commonly formulated as subset-sum: find the ledger
 amounts add to the statement amount. That formulation is well established, and reasonably so.
 
 - A J.P. Morgan paper from August 2025 formalises it as the **Subset Sum Matching Problem**,
-  and says of it: *"it is a critical part of an accounting process known as reconciliation,
-  where two sets of financial records are compared to ensure numerical accuracy and
-  agreement."* Two subsets match when the absolute difference of their sums is within a
-  tolerance. ([arXiv:2508.19218](https://arxiv.org/abs/2508.19218), J.P. Morgan Quantitative
-  Research and J.P. Morgan AI Research)
-- **Oracle Account Reconciliation** implements it. Its 1-to-Many matching rule selects the
-  subsystem transactions where *"Sum of Amounts in the subsystem is equal to Amount in the
-  source system"*.
+and says of it, **in the introduction** rather than the
+  abstract: *"it is a critical part of an accounting process known as reconciliation, where
+  two sets of financial records are compared to ensure numerical accuracy and agreement."* Two
+  subsets match when the absolute difference of their sums is within a tolerance.
+  ([arXiv:2508.19218](https://arxiv.org/abs/2508.19218), J.P. Morgan Quantitative Research and
+  J.P. Morgan AI Research)
+- **Oracle Account Reconciliation** implements it. Its worked example of a 1-to-Many rule
+  requires that the *"Sum of Amounts in the subsystem should be equal to the source system
+  Amount"*.
   ([Understanding the Transaction Matching Engine](https://docs.oracle.com/en/cloud/saas/account-reconcile-cloud/adarc/admin_trans_match_overview_matching_engine_100x0f827b25.html))
 - There are **patents** on it going back over a decade. US8548971B2, *Financial transaction
   reconciliation* (Bank of America, filed 2012, granted 1 October 2013), performs *"subset sum
@@ -49,8 +62,10 @@ amounts add to the statement amount. That formulation is well established, and r
   combinations."*
   ([ReconcileIQ](https://bankreconciler.app/blogInvoicePaymentMatching))
 
-We scoped a bounded subset-sum solver over the top-5 candidates before measuring anything.
-Then we measured.
+We took that formulation on faith. A bounded subset-sum solver over the top-5 candidates was
+specified — the enumeration, the tolerance, the tie-breaking when several subsets hit the
+target — and was days of work from being written. Nothing had been measured yet. Then we
+measured, and the measurement is the only reason it was never built.
 
 ### The regimes
 
@@ -163,6 +178,51 @@ check over the interface.
 
 ---
 
+## Why this matters to a payment company
+
+Nothing below was measured by this project — it is context, and every claim is a link. This
+system reconciles a benchmark dataset, not anyone's production ledger.
+
+**Reconciliation is a deadline, not a background job.** Under the RBI's *Guidelines on
+Regulation of Payment Aggregators and Payment Gateways*, clause 8.6: *"At the end of the day,
+the amount in escrow account shall not be less than the amount already collected from customer
+as per 'Tp' or the amount due to the merchant."* The same guidelines set a reporting calendar —
+*Statistics of Transactions Handled* monthly by the 7th, and an *Auditors' Certificate on
+Maintenance of Balance in Escrow Account* quarterly by the 15th of the following month.
+([RBI, 17 March 2020](https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=11822))
+That is the condition the exposure-ranked queue is built for: a fixed number of hours before a
+deadline, and a decision about which items to spend them on.
+
+**Unresolved items have a published per-day price.** RBI's *Harmonisation of Turn Around Time
+(TAT) and customer compensation for failed transactions* sets, for a failed ATM withdrawal,
+*"₹ 100/- per day of delay beyond T + 5 days, to the credit of the account holder"*, with
+comparable per-day amounts across card, UPI, IMPS and wallet failures.
+([RBI/2019-20/67, 20 September 2019](https://www.rbi.org.in/Scripts/NotificationUser.aspx?Id=11693))
+An ageing exception is not a neutral backlog item.
+
+**One-to-many settlement is a documented product structure.** Razorpay Route *"splits payments
+into various portions for seamless transfer to multiple parties"*, and its API exposes
+[Fetch Transfers for a Settlement](https://razorpay.com/docs/api/payments/route/fetch-transfers-for-a-settlement/)
+— all the transfers made for one `recipient_settlement_id`. One credit, many underlying
+transfers, which is the shape the multi-key label describes.
+([Route](https://razorpay.com/docs/payments/route/))
+
+**Near-duplicate records have a real mechanism behind them.** Razorpay's webhook documentation
+states plainly that *"You could be receiving the same events multiple times as Razorpay follows
+at-least-once delivery semantics"* and that *"you may not always receive the webhooks in
+order"*, recommending an idempotency check on `x-razorpay-event-id`.
+([Webhook best practices](https://razorpay.com/docs/webhooks/best-practices/))
+That is the class this system handles worst: `duplicate_reference` is where set completion
+falls apart out of domain, losing 50.546 points (finding 5).
+
+**What this does not do.** It reconciles a static batch at line level, matching statement rows
+to ledger allocation keys. It does not reconcile balances, and it has no notion of time passing
+after the batch: a reversal, a chargeback or a refund landing weeks later is not something it
+models. Both are ordinary requirements in production reconciliation and neither is addressed
+here.
+
+---
+
 ## Datasets, and what each is for
 
 | file | rows | role |
@@ -237,13 +297,14 @@ in `retrieve.log`, the reachable ceiling at exact-amount blocking is 96.0808% an
 0.01 tolerance is **96.7196%**. Which of those two the comparison was actually implementing
 had been left to floating-point noise at the boundary.
 
-### 3. The digit-run signal is real and completely redundant
+### 3. The digit-run signal is real, redundant as a boost, harmful as a filter
 
 **Assumed.** Bank references and ledger references share long digit runs. Matching on a shared
 run of 7–12 digits should be a strong signal worth adding.
 
-**Measured** (`retrieve.log`). The signal is real: of 30,057 true single-key matches, 19,394
-share a digit run of length 7–12 — **64.5241%**. But after amount blocking has already cut the
+**Measured** (`retrieve.log`). The signal is real. The denominator is single-key labels only —
+the log reads *"True matches tested (single-key labels): 30,057"* — and of those 30,057, 19,394
+share a digit run of length 7–12, **64.5241%**. But after amount blocking has already cut the
 pool to ~15 candidates, 42.7661% of the *surviving* candidates share a run with the query,
 which is a weak discriminator. And the redundancy check settles it:
 
@@ -256,8 +317,11 @@ of those, cosine's top-1 ALREADY shares a run:                             6,131
 (62.8073%) because 34.10% of queries have no surviving candidate sharing a run at all,
 forcing an abstention on every one. As a boost it changes nothing.
 
-**Consequence.** `+0.0000 pts` on every metric — top-1, not-in-top-5, match rate, precision.
-The character n-grams *are* scoring on the shared run; cosine had already absorbed it.
+**Consequence.** As a boost, `+0.0000 pts` on every metric — top-1, not-in-top-5, match rate,
+precision. The character n-grams *are* scoring on the shared run; cosine had already absorbed
+it. As a filter it is not neutral but actively harmful on match rate, though it does buy
+precision: 99.4521%, **+1.0383 points**, for 32.5615 points of match rate. That is the same bad
+exchange rate as finding 6, and it was refused for the same reason.
 
 ### 4. Dropping `B_transactionReferences` cost 2.33 points
 
@@ -299,6 +363,10 @@ The per-class table locates it exactly (`synth_run.log`):
 | one_to_one | 46,944 | 89.328% | 84.507% | −4.821 |
 | repeat | 1,855 | 0.000% | 60.000% | +60.000 |
 
+The gain does not offset the loss because the classes are not the same size: `repeat` is 1,855
+rows and `duplicate_reference` is 4,024. Sixty points on the smaller class loses to fifty on
+one more than twice as large.
+
 **Changed.** Nothing was retuned to make the synthetic number look better — that would have
 destroyed the test. The result is reported as the generalisation signal it is.
 
@@ -320,7 +388,7 @@ of escalated rows already correct.
 {0.00, 0.02, 0.04, 0.06, 0.08, 0.10, 0.15} × `min_margin` in
 {0.000, 0.005, 0.010, 0.020, 0.040, 0.080}. One point disables the trigger, so 41 fired. **The
 criterion failed at all 41.** The best available was `min_top1=0.00, min_margin=0.010` at
-86.568% already-correct — still escalating six correct rows for every wrong one.
+86.568% already-correct — still escalating 6.4 correct rows for every wrong one.
 
 **Changed.** Dropped, by setting both thresholds to 0.0. It never fires on eval or synthetic.
 
@@ -526,8 +594,9 @@ above its magnitude bar. Failures name the element and the number that broke.
 (10,615 rows, 633.76B), `investigations.jsonl`, and `web/data/` — 13,767 files totalling
 24.45 MB with `--synth`, or the eval batch alone without it.
 
-Source data and anything derived from it row by row is gitignored; all of it regenerates from
-the commands above. The audit JSONL carries the candidates considered, their scores and amount
+`web/data/` is gitignored — 13,767 files is not something to put in a repository, and it
+regenerates from the audit files in one command. So is the source data and anything derived
+from it row by row; all of it comes back from the commands above. The audit JSONL carries the candidates considered, their scores and amount
 deltas, which triggers fired, the decision and the evidence, so any single decision can be
 reconstructed.
 
@@ -536,6 +605,8 @@ Every number in this README appears in `score.log`, `retrieve.log`, `complete.lo
 or `investigations.jsonl`, with three exceptions, all deliberate. A figure written as a
 difference (−2.300, −50.546, −4.821, and the coverage-for-precision trade in finding 6) is the
 subtraction of two logged numbers, and both operands are printed beside it. File sizes and
-counts (211,923 and 2,209,247 bytes) are measured off disk. And the identifiers in *Why there
-is no subset-sum solver here* — arXiv:2508.19218, US8548971B2, the dates — belong to the cited
-external sources, each linked and quoted verbatim from the source itself.
+counts (211,923 and 2,209,247 bytes) are measured off disk. And the identifiers, dates and
+figures in the two cited sections — *Why there is no subset-sum solver here* and *Why this
+matters to a payment company* — belong to external sources, not to this project: arXiv:2508.19218,
+US8548971B2, RBI Id=11822 and Id=11693, the ₹100/- per day. Each is linked, and each quotation
+was checked character by character against the source page rather than paraphrased from memory.
