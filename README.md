@@ -552,12 +552,15 @@ python controller.py > ctrl.log       # ~9 min
 # 8. Value-weighted measurement over the decisions from step 7
 python exposure.py > exposure.log     # ~1 min
 
+# 9. Signed balance drift over the same decisions — direction and cancellation
+python drift.py > drift.log           # ~1 min
+
 # supporting measurements for the findings above
 python findings.py > findings.log     # ~1 min
 ```
 
-Steps 3–7 are independent except that step 7 reads the synthetic files from step 5, and step 8
-reads the audit files from step 7.
+Steps 3–7 are independent except that step 7 reads the synthetic files from step 5, and steps 8
+and 9 read the audit files from step 7.
 
 ### The explanation layer and the interface
 
@@ -601,7 +604,8 @@ deltas, which triggers fired, the decision and the evidence, so any single decis
 reconstructed.
 
 Every number in this README appears in `score.log`, `retrieve.log`, `complete.log`, `gen.log`,
-`synth_run.log`, `ctrl.log`, `exposure.log`, `export.log`, `investigate.log`, `findings.log`
+`synth_run.log`, `ctrl.log`, `exposure.log`, `drift.log`, `export.log`, `investigate.log`,
+`findings.log`
 or `investigations.jsonl`, with three exceptions, all deliberate. A figure written as a
 difference (−2.300, −50.546, −4.821, and the coverage-for-precision trade in finding 6) is the
 subtraction of two logged numbers, and both operands are printed beside it. File sizes and

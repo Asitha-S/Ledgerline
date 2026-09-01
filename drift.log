@@ -1,0 +1,417 @@
+
+========================================================================================================
+drift.py — signed balance drift over decisions already made
+measurement only: nothing is tuned, re-decided or re-ranked
+========================================================================================================
+
+========================================================================================================
+SIGNED BALANCE DRIFT — BenchRec eval
+========================================================================================================
+
+  drift  =  (ledger value the controller attached)
+            - (ledger value the label names)          per auto-closed row, in cents
+
+  drift > 0   more ledger value attached than the label names
+  drift < 0   less
+  drift = 0   equal value, which INCLUDES wrong postings onto equal-valued keys
+
+  Amounts are used with the sign the dataset stores. A statement debit is
+  positive, a statement credit negative, and a correctly matched ledger row
+  carries the same sign as its statement row. Nothing is negated or abs()'d.
+
+  This is mis-ATTRIBUTION, not loss. The statement value is posted either way;
+  one account is overstated and another understated. exposure.py reports the
+  full value at risk. This reports direction and cancellation.
+
+  auto-closed rows measured        28,915
+    key sets agree, drift = 0      28,443   (98.368%)
+    key sets differ                472   (1.632%)
+
+  All drift originates in 472 of 28,915 decisions. The rest contribute exactly
+  zero and need no amount lookup: an identical key set carries an identical value
+  whichever ledger rows it denotes.
+
+  keys per posted answer           {1: 28915}
+    Every auto-closed answer is a single key. This is structural, not
+    incidental: controller.py escalates whenever set completion adds a key
+    (t_add), so a multi-key answer can never reach auto-close.
+  label stratum of those rows      {'single-key': 28588, 'multi-key': 293, 'blank': 34}
+
+--------------------------------------------------------------------------------------------------------
+COMPUTABILITY — where the difference is defined, and where it is not
+--------------------------------------------------------------------------------------------------------
+
+  A rows 37,123   distinct allocation keys 22,779
+  keys carried by rows of one amount   20,213 (88.735%)
+  keys carried by rows of >1 amount    2,566 (11.265%)  <- amount not determined by the data
+
+  of the 472 rows whose key sets differ:
+    drift EXACT                        207   (43.856%)
+    drift BOUNDED only                 265   (56.144%)
+      because a key in the symmetric difference is carried by several
+      ledger rows of different amounts and matchId is blank
+    no bound at all (key absent from A)  0
+
+    width of those intervals: median 41.18M, max 1.45B
+    No interval is collapsed to a point anywhere in this report.
+
+--------------------------------------------------------------------------------------------------------
+NET AND GROSS
+--------------------------------------------------------------------------------------------------------
+
+  On the 28,650 rows where drift is exact (207 of them non-zero):
+
+    net   signed drift                -4.01B
+    gross absolute drift               4.97B
+    net / gross                      80.827%   <- 100% means no cancellation at all
+    cancelled                        952.07M
+
+  Adding the 265 bounded rows, the net over ALL 28,915 auto-closed rows lies in:
+    [ -11.35B , 6.45B ]
+    gross in  [ 10.04B , 25.82B ]
+
+  Read the net as the extent to which automating these decisions moved the
+  ledger in one direction rather than washing out. It is not a loss figure.
+
+--------------------------------------------------------------------------------------------------------
+DISTRIBUTION OF SIGNED PER-ROW DRIFT   (exact rows only)
+--------------------------------------------------------------------------------------------------------
+
+  positive (over-attached)   72
+  negative (under-attached)  103
+  exactly zero               28,475   (32 of them WRONG postings — see the blind spot below)
+
+  positive magnitudes  n=72  min 0.02  median 800.00K  p90 4.00M  p99 119.54M  max 358.73M  sum 476.03M
+  negative magnitudes  n=103  min 0.38  median 21.83M  p90 117.52M  p99 200.00M  max 358.73M  sum 4.49B
+
+  direction-normalised (drift x sign of the statement amount), 175 non-zero rows:
+    over-attached in the row's own direction   44
+    under-attached                             131
+    net normalised                             -3.42B
+    net / gross, normalised                   68.821%
+      Compare this with the raw net/gross above. The raw figure treats a
+      statement debit and a statement credit as opposite, so the two cancel
+      in the total even when both are errors in the same direction. Where
+      the normalised ratio is the higher of the two, the bias is systematic
+      and the raw net understates it.
+
+    by label stratum:
+      multi-key    over     1   under   112   net       -3.82B
+      blank        over    34   under     0   net      766.42M
+      single-key   over     9   under    19   net     -360.19M
+      A multi-key label cannot be answered by an auto-close, which posts
+      exactly one key, and 112 of 113 such rows under-attach (99.115%).
+      Not all of them: one large ledger row can still exceed the sum of
+      several small ones, so the direction is empirical, not structural.
+      Blank labels over-attach without exception, and that one IS structural:
+      the label names no ledger value at all, so drift is the whole posted
+      amount, which matched the statement to the cent.
+
+--------------------------------------------------------------------------------------------------------
+BY EXCEPTION CLASS
+--------------------------------------------------------------------------------------------------------
+
+  NOT COMPUTABLE. exception_class is empty on all 28,915 auto-closed rows,
+  and 28,915 of them recorded no trigger either.
+
+  This is by construction, not a gap in the audit. In controller.py the escalate
+  flag is  esc = t_no | t_add | t_fee | t_low,  and the class is a select over
+  five branches built from those same four triggers. A row carries a class
+  exactly when a trigger fires, and escalates exactly when a trigger fires. An
+  auto-closed row is therefore, by definition, a row with no class. Classes
+  partition the escalated queue; they do not reach the auto-closed population,
+  and no breakdown of auto-close drift by exception class exists to be reported.
+
+  Substituted below are the two axes that DO vary across auto-closed rows: the
+  stratum of the label, and the one class-adjacent flag the audit records for
+  rows that were not escalated.
+
+--------------------------------------------------------------------------------------------------------
+BY LABEL STRATUM   (substitute for exception class)
+--------------------------------------------------------------------------------------------------------
+
+  single-key / multi-key / blank refers to the LABEL, not the answer — every
+  auto-closed answer is a single key.
+
+  group                rows  differing   exact     net (exact)   gross (exact)                   bounded net range
+  --------------------------------------------------------------------------------------------------------------
+  single-key         28,588        145  28,500        -360.10M         362.52M                     [-1.02B, 7.17B]
+  multi-key             293        293     116          -3.67B           3.84B                 [-10.35B, -738.17M]
+  blank                  34         34      34          20.17M         766.42M
+
+--------------------------------------------------------------------------------------------------------
+BY DUPLICATE-REFERENCE FLAG   (recorded on auto-closed rows)
+--------------------------------------------------------------------------------------------------------
+
+  duplicate_reference_among_candidates is recorded for every row but only
+  escalates in combination with set completion, so it survives here.
+
+  group                rows  differing   exact     net (exact)   gross (exact)                   bounded net range
+  --------------------------------------------------------------------------------------------------------------
+  no dup ref         19,571        230  19,490        -686.86M           1.63B                     [-1.40B, 6.18B]
+  dup ref seen        9,344        242   9,160          -3.33B           3.33B                   [-9.95B, 270.49M]
+
+--------------------------------------------------------------------------------------------------------
+BY STATEMENT AMOUNT MAGNITUDE   (|B amount|)
+--------------------------------------------------------------------------------------------------------
+
+  Buckets are on the statement row's own amount, so a row appears in the
+  bucket a reviewer would sort it into, whatever its drift turned out to be.
+
+  group                rows  differing   exact     net (exact)   gross (exact)                   bounded net range
+  --------------------------------------------------------------------------------------------------------------
+  < 1K                  768         16     766        -594.81K         660.70K                   [-830.87K, 3.38M]
+  1K - 10K            1,238          2   1,238        -118.79K         118.79K
+  10K - 100K          3,128         24   3,123        -101.40K         970.87K                  [-56.51K, 294.88K]
+  100K - 1M           5,529         50   5,514         982.91K          11.69M                 [-213.99M, 240.12M]
+  1M - 10M            5,868        126   5,807         -15.73M         171.39M                   [-421.88M, 6.04B]
+  10M - 100M         11,773        251  11,591          -4.00B           4.06B                  [-10.71B, 161.70M]
+  >= 100M               611          3     611            0.00         717.46M
+
+--------------------------------------------------------------------------------------------------------
+WORKED EXAMPLE — the >= 100M bucket, every wrong posting in it
+--------------------------------------------------------------------------------------------------------
+
+  B_id                      |B amount|               drift  label
+  ----------------------------------------------------------------------------
+  535742045803                 949.00M                0.00  single-key
+  132562348380                 358.73M             358.73M  blank
+  234837519256                 358.73M            -358.73M  blank
+
+  net of the exact ones   0.00
+  gross                   717.46M
+  value mis-attributed    1.67B   (exposure.py's measure, all rows above)
+
+  The net is exactly zero and the postings are all wrong. Opposite-signed
+  errors of equal magnitude cancel, and a wrong posting onto an
+  equal-valued key contributes nothing to begin with. A balance check over
+  this bucket would report that nothing had happened.
+
+--------------------------------------------------------------------------------------------------------
+WHAT THIS MEASUREMENT IS BLIND TO
+--------------------------------------------------------------------------------------------------------
+
+  wrong postings with drift EXACTLY zero        32 of 207 exact wrong rows (15.459%)
+  wrong postings whose interval straddles zero  128 of 265 bounded wrong rows
+
+  value mis-attributed by those zero-drift rows  1.04B
+    — invisible to any balance check, because the wrong key carries the same
+      amount as the right one. The posting is wrong; the totals agree.
+
+  This is the repeat regime showing up in the drift figures. Where several
+  ledger rows already carry the statement's exact amount, choosing the wrong
+  one produces zero drift by construction. A net-drift check cannot find those
+  errors, and on this data they are not a rounding detail.
+
+  Also outside this measurement, by construction:
+    * escalated rows. Drift is defined over postings the system made without
+      review; an escalated row has not been posted, so it has no drift.
+    * every auto-closed row matched its top candidate to within 1 cent
+      (controller.py escalates on t_fee = has & ~exact_top1, TOL_CENTS = 1), so
+      the posted side of every row here is the statement amount to the cent.
+      Drift is entirely a property of what the LABEL says, never of a
+      near-miss on the amount.
+
+========================================================================================================
+SIGNED BALANCE DRIFT — synthetic 50,000-group
+========================================================================================================
+
+  drift  =  (ledger value the controller attached)
+            - (ledger value the label names)          per auto-closed row, in cents
+
+  drift > 0   more ledger value attached than the label names
+  drift < 0   less
+  drift = 0   equal value, which INCLUDES wrong postings onto equal-valued keys
+
+  Amounts are used with the sign the dataset stores. A statement debit is
+  positive, a statement credit negative, and a correctly matched ledger row
+  carries the same sign as its statement row. Nothing is negated or abs()'d.
+
+  This is mis-ATTRIBUTION, not loss. The statement value is posted either way;
+  one account is overstated and another understated. exposure.py reports the
+  full value at risk. This reports direction and cancellation.
+
+  auto-closed rows measured        39,385
+    key sets agree, drift = 0      38,767   (98.431%)
+    key sets differ                618   (1.569%)
+
+  All drift originates in 618 of 39,385 decisions. The rest contribute exactly
+  zero and need no amount lookup: an identical key set carries an identical value
+  whichever ledger rows it denotes.
+
+  keys per posted answer           {1: 39385}
+    Every auto-closed answer is a single key. This is structural, not
+    incidental: controller.py escalates whenever set completion adds a key
+    (t_add), so a multi-key answer can never reach auto-close.
+  label stratum of those rows      {'single-key': 38880, 'multi-key': 501, 'blank': 4}
+
+--------------------------------------------------------------------------------------------------------
+COMPUTABILITY — where the difference is defined, and where it is not
+--------------------------------------------------------------------------------------------------------
+
+  A rows 108,534   distinct allocation keys 108,534
+  keys carried by rows of one amount   108,534 (100.000%)
+  keys carried by rows of >1 amount    0 (0.000%)  <- amount not determined by the data
+
+  of the 618 rows whose key sets differ:
+    drift EXACT                        618   (100.000%)
+    drift BOUNDED only                 0   (0.000%)
+    no bound at all (key absent from A)  0
+
+--------------------------------------------------------------------------------------------------------
+NET AND GROSS
+--------------------------------------------------------------------------------------------------------
+
+  On the 39,385 rows where drift is exact (618 of them non-zero):
+
+    net   signed drift                15.13B
+    gross absolute drift              54.49B
+    net / gross                      27.763%   <- 100% means no cancellation at all
+    cancelled                         39.36B
+
+  Read the net as the extent to which automating these decisions moved the
+  ledger in one direction rather than washing out. It is not a loss figure.
+
+--------------------------------------------------------------------------------------------------------
+DISTRIBUTION OF SIGNED PER-ROW DRIFT   (exact rows only)
+--------------------------------------------------------------------------------------------------------
+
+  positive (over-attached)   266
+  negative (under-attached)  262
+  exactly zero               38,857   (90 of them WRONG postings — see the blind spot below)
+
+  positive magnitudes  n=266  min 11.04  median 332.88K  p90 400.30M  p99 2.08B  max 3.34B  sum 34.81B
+  negative magnitudes  n=262  min 10.46  median 172.07K  p90 221.25M  p99 1.00B  max 1.49B  sum 19.68B
+
+  direction-normalised (drift x sign of the statement amount), 528 non-zero rows:
+    over-attached in the row's own direction   29
+    under-attached                             499
+    net normalised                             -54.44B
+    net / gross, normalised                   99.923%
+      Compare this with the raw net/gross above. The raw figure treats a
+      statement debit and a statement credit as opposite, so the two cancel
+      in the total even when both are errors in the same direction. Where
+      the normalised ratio is the higher of the two, the bias is systematic
+      and the raw net understates it.
+
+    by label stratum:
+      multi-key    over     0   under   499   net      -54.47B
+      single-key   over    25   under     0   net       19.17K
+      blank        over     4   under     0   net       20.87M
+      A multi-key label cannot be answered by an auto-close, which posts
+      exactly one key, and 499 of 499 such rows under-attach (100.000%).
+      Blank labels over-attach without exception, and that one IS structural:
+      the label names no ledger value at all, so drift is the whole posted
+      amount, which matched the statement to the cent.
+
+--------------------------------------------------------------------------------------------------------
+BY EXCEPTION CLASS
+--------------------------------------------------------------------------------------------------------
+
+  NOT COMPUTABLE. exception_class is empty on all 39,385 auto-closed rows,
+  and 39,385 of them recorded no trigger either.
+
+  This is by construction, not a gap in the audit. In controller.py the escalate
+  flag is  esc = t_no | t_add | t_fee | t_low,  and the class is a select over
+  five branches built from those same four triggers. A row carries a class
+  exactly when a trigger fires, and escalates exactly when a trigger fires. An
+  auto-closed row is therefore, by definition, a row with no class. Classes
+  partition the escalated queue; they do not reach the auto-closed population,
+  and no breakdown of auto-close drift by exception class exists to be reported.
+
+  Substituted below are the two axes that DO vary across auto-closed rows: the
+  stratum of the label, and the one class-adjacent flag the audit records for
+  rows that were not escalated.
+
+--------------------------------------------------------------------------------------------------------
+BY LABEL STRATUM   (substitute for exception class)
+--------------------------------------------------------------------------------------------------------
+
+  single-key / multi-key / blank refers to the LABEL, not the answer — every
+  auto-closed answer is a single key.
+
+  group                rows  differing   exact     net (exact)   gross (exact)                   bounded net range
+  --------------------------------------------------------------------------------------------------------------
+  single-key         38,880        113  38,880           2.16K          19.17K
+  multi-key             501        501     501          15.11B          54.47B
+  blank                   4          4       4          20.53M          20.87M
+
+--------------------------------------------------------------------------------------------------------
+BY DUPLICATE-REFERENCE FLAG   (recorded on auto-closed rows)
+--------------------------------------------------------------------------------------------------------
+
+  duplicate_reference_among_candidates is recorded for every row but only
+  escalates in combination with set completion, so it survives here.
+
+  group                rows  differing   exact     net (exact)   gross (exact)                   bounded net range
+  --------------------------------------------------------------------------------------------------------------
+  no dup ref         34,402        470  34,402          10.04B          46.61B
+  dup ref seen        4,983        148   4,983           5.09B           7.87B
+
+--------------------------------------------------------------------------------------------------------
+BY STATEMENT AMOUNT MAGNITUDE   (|B amount|)
+--------------------------------------------------------------------------------------------------------
+
+  Buckets are on the statement row's own amount, so a row appears in the
+  bucket a reviewer would sort it into, whatever its drift turned out to be.
+
+  group                rows  differing   exact     net (exact)   gross (exact)                   bounded net range
+  --------------------------------------------------------------------------------------------------------------
+  < 1K               10,042        161  10,042           4.88K          43.38K
+  1K - 10K            4,834         72   4,834         -19.89K         420.73K
+  10K - 100K          4,897         65   4,897         202.82K           2.80M
+  100K - 1M           4,955         82   4,955           6.85M          46.08M
+  1M - 10M            4,925         71   4,925        -886.49K         510.23M
+  10M - 100M          4,906         73   4,906         670.29M           3.94B
+  >= 100M             4,826         94   4,826          14.45B          49.99B
+
+--------------------------------------------------------------------------------------------------------
+WORKED EXAMPLE — the >= 100M bucket, every wrong posting in it
+--------------------------------------------------------------------------------------------------------
+
+  B_id                      |B amount|               drift  label
+  ----------------------------------------------------------------------------
+  425563239135                 958.25M             958.25M  multi-key
+  640874288936                 948.85M            -948.85M  multi-key
+  928471500304                 923.75M             923.75M  multi-key
+  417495911095                 915.55M             915.55M  multi-key
+  866481761088                 886.79M               1.77B  multi-key
+  662650154159                 855.77M             855.77M  multi-key
+  895767291317                 835.90M               3.34B  multi-key
+  920794626709                 809.57M            -809.57M  multi-key
+  225946076286                 793.02M            -793.02M  multi-key
+  371254427863                 743.26M              -1.49B  multi-key
+  ... and 84 more
+
+  net of the exact ones   14.45B
+  gross                   49.99B
+  value mis-attributed    34.63B   (exposure.py's measure, all rows above)
+
+--------------------------------------------------------------------------------------------------------
+WHAT THIS MEASUREMENT IS BLIND TO
+--------------------------------------------------------------------------------------------------------
+
+  wrong postings with drift EXACTLY zero        90 of 618 exact wrong rows (14.563%)
+  wrong postings whose interval straddles zero  0 of 0 bounded wrong rows
+
+  value mis-attributed by those zero-drift rows  4.75B
+    — invisible to any balance check, because the wrong key carries the same
+      amount as the right one. The posting is wrong; the totals agree.
+
+  This is the repeat regime showing up in the drift figures. Where several
+  ledger rows already carry the statement's exact amount, choosing the wrong
+  one produces zero drift by construction. A net-drift check cannot find those
+  errors, and on this data they are not a rounding detail.
+
+  Also outside this measurement, by construction:
+    * escalated rows. Drift is defined over postings the system made without
+      review; an escalated row has not been posted, so it has no drift.
+    * every auto-closed row matched its top candidate to within 1 cent
+      (controller.py escalates on t_fee = has & ~exact_top1, TOL_CENTS = 1), so
+      the posted side of every row here is the statement amount to the cent.
+      Drift is entirely a property of what the LABEL says, never of a
+      near-miss on the amount.
+
+========================================================================================================
+done
+========================================================================================================
