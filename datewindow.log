@@ -1,0 +1,246 @@
+
+================================================================================================
+datewindow.py — retrieval sensitivity to the date window
+measurement only: retrieve.py imported unmodified, nothing tuned or refitted
+================================================================================================
+
+================================================================================================
+DATE WINDOW SWEEP — BenchRec eval
+================================================================================================
+
+  37,123 ledger rows, 32,048 statement rows, 30,057 single-key labels whose key exists on the ledger side
+
+  GROUND TRUTH — signed gap to the nearest ledger row carrying the gold key
+    within 0 days   98.829%
+    within +/-1       99.228%
+    within +/-2       99.355%
+    within +/-3       99.511%
+    within +/-5       99.724%
+    within +/-7       99.857%
+    within +/-14      99.897%
+    within +/-30      99.983%
+    within +/-60      100.000%
+    |gap| median 0.0, p90 0.0, p99 1.0, max 40.0 days
+    ledger BEFORE statement 0.865%, same day 98.829%, AFTER 0.306%
+    This is the distribution the window has to cover. Everything below is
+    the retriever's response to it.
+    0                          ceiling  96.197%  top1  96.001%  match  96.001%  (1.7s)
+    +/-1                       ceiling  96.467%  top1  95.798%  match  95.798%  (3.4s)
+    +/-2                       ceiling  96.533%  top1  95.665%  match  95.665%  (4.1s)
+    +/-3                       ceiling  96.630%  top1  95.605%  match  95.605%  (5.0s)
+    +/-5                       ceiling  96.700%  top1  95.522%  match  95.522%  (6.9s)
+    +/-7                       ceiling  96.720%  top1  95.369%  match  95.369%  (9.7s)
+    +/-14                      ceiling  96.746%  top1  95.206%  match  95.206%  (16.9s)
+    +/-30                      ceiling  96.799%  top1  95.000%  match  95.000%  (30.5s)
+    +/-60                      ceiling  96.816%  top1  94.836%  match  94.836%  (47.7s)
+    unbounded                  ceiling  96.816%  top1  94.787%  match  94.787%  (54.8s)
+    ledger-before only, 7      ceiling  96.603%  top1  95.519%  match  95.519%  (5.7s)
+    statement-before only, 7   ceiling  96.314%  top1  95.568%  match  95.568%  (5.7s)
+    ledger-before only, 30     ceiling  96.653%  top1  95.163%  match  95.163%  (16.0s)
+    statement-before only, 30  ceiling  96.344%  top1  95.272%  match  95.272%  (16.1s)
+
+------------------------------------------------------------------------------------------------
+FULL SWEEP — BenchRec eval
+------------------------------------------------------------------------------------------------
+
+  window                     pool(date) pool(+amt)  ceiling%    top1%    top5%   match%    prec%  abstain%   secs
+  ---------------------------------------------------------------------------------------------------------------
+  0                              662.86       6.69    96.197   96.001   96.157   96.001   99.682     4.431    1.7
+  +/-1                          1638.19       8.46    96.467   95.798   96.417   95.798   99.163     4.138    3.4
+  +/-2                          2383.48       9.85    96.533   95.665   96.433   95.665   98.950     4.063    4.1
+  +/-3                          3026.38      10.72    96.630   95.605   96.507   95.605   98.786     3.969    5.0
+  +/-5                          4362.85      12.11    96.700   95.522   96.483   95.522   98.623     3.897    6.9
+  +/-7 *                        6380.85      14.08    96.720   95.369   96.450   95.369   98.414     3.847    9.7
+  +/-14                        11420.30      17.74    96.746   95.206   96.370   95.206   98.175     3.776   16.9
+  +/-30                        20988.17      24.13    96.799   95.000   96.257   95.000   97.871     3.673   30.5
+  +/-60                        33067.69      31.88    96.816   94.836   96.141   94.836   97.657     3.620   47.7
+  unbounded                    37123.00      36.72    96.816   94.787   96.111   94.787   97.599     3.610   54.8
+  ledger-before only, 7         3541.33      10.39    96.603   95.519   96.477   95.519   98.717     3.994    5.7
+  statement-before only, 7      3502.38      10.38    96.314   95.568   96.187   95.568   99.038     4.234    5.7
+  ledger-before only, 30       10924.81      15.44    96.653   95.163   96.270   95.163   98.231     3.872   16.0
+  statement-before only, 30     10726.21      15.38    96.344   95.272   96.018   95.272   98.656     4.150   16.1
+
+  * shipped. pool(date) is candidates after currency+account+date blocking;
+    pool(+amt) after the 0.01 amount tolerance, which is what gets ranked.
+
+------------------------------------------------------------------------------------------------
+VALIDATION vs retrieve.log
+------------------------------------------------------------------------------------------------
+
+  ok   single-key match       this sweep 95.3688%   retrieve.log 95.3688%
+  ok   single-key precision   this sweep 98.4138%   retrieve.log 98.4138%
+  ok   top-1                  this sweep 95.3688%   retrieve.log 95.3688%
+  ok   overall match          this sweep 89.9900%   retrieve.log 89.9900%
+  ok   abstention             this sweep 3.8474%   retrieve.log 3.8474%
+
+  The +/-7 row reproduces retrieve.log exactly, so the rest of the sweep
+  differs from the shipped retriever only in the date interval.
+
+------------------------------------------------------------------------------------------------
+WHERE IT MOVES — BenchRec eval
+------------------------------------------------------------------------------------------------
+
+  window        ceiling%  d ceiling   match%  d match    prec%     pool
+  ---------------------------------------------------------------------
+  0               96.197              96.001            99.682     6.69
+  +/-1            96.467     +0.269   95.798   -0.203   99.163     8.46
+  +/-2            96.533     +0.067   95.665   -0.133   98.950     9.85
+  +/-3            96.630     +0.096   95.605   -0.060   98.786    10.72
+  +/-5            96.700     +0.070   95.522   -0.083   98.623    12.11
+  +/-7 *          96.720     +0.020   95.369   -0.153   98.414    14.08
+  +/-14           96.746     +0.027   95.206   -0.163   98.175    17.74
+  +/-30           96.799     +0.053   95.000   -0.206   97.871    24.13
+  +/-60           96.816     +0.017   94.836   -0.163   97.657    31.88
+  unbounded       96.816     +0.000   94.787   -0.050   97.599    36.72
+
+  1. THE CEILING — what blocking makes reachable at all
+     0 days 96.197%  ->  unbounded 96.816%   total span 0.619 pts
+     narrowest window within 0.1 pts of the maximum: +/-7 (96.720%)
+     The window buys almost nothing: 0.619 points separate no window
+     at all from an unbounded one. Blocking on date is not what makes this
+     dataset retrievable.
+
+  2. RANKING — what widening costs
+     match     0 days 96.001%  ->  unbounded 94.787%   (-1.214 pts)
+     precision 0 days 99.682%  ->  unbounded 97.599%   (-2.084 pts)
+     pool      0 days 6.69  ->  unbounded 36.72 candidates per query
+     Widening the window makes retrieval WORSE, not better. The extra
+     candidates it admits are overwhelmingly wrong ones, and every one of
+     them is another chance for cosine to rank a decoy first.
+
+  3. IS +/-7 ON A PLATEAU OR AN EDGE?
+     ceiling at +/-7                        96.720%
+     lost by narrowing to +/-3              0.090 pts
+     gained by widening to +/-30            0.080 pts
+     match rate given up by widening to +/-30  0.369 pts
+     PLATEAU. Neither halving nor quadrupling the window moves the ceiling
+     by a quarter of a point. +/-7 is not a tuned value and nothing here
+     depends on it being 7. A deployment with slower settlement can widen
+     it safely, at a small and measurable cost in ranking precision.
+
+  4. ASYMMETRIC — settlement delay runs in one direction
+     ledger-before only, 7      ceiling  96.603% (-0.116)  match  95.519% (+0.150)  pool  10.39 (-3.69)
+     statement-before only, 7   ceiling  96.314% (-0.406)  match  95.568% (+0.200)  pool  10.38 (-3.70)
+     ledger-before only, 30     ceiling  96.653% (-0.146)  match  95.163% (+0.163)  pool  15.44 (-8.69)
+     statement-before only, 30  ceiling  96.344% (-0.456)  match  95.272% (+0.273)  pool  15.38 (-8.75)
+     One-sided at 7 costs 0.116 points of ceiling against the symmetric window while
+     roughly halving the pool. Which side matters more is a property of the
+     data's own timing, printed as ground truth at the top of this section.
+
+================================================================================================
+DATE WINDOW SWEEP — synthetic 50,000-group
+================================================================================================
+
+  108,534 ledger rows, 50,000 statement rows, 46,944 single-key labels whose key exists on the ledger side
+
+  GROUND TRUTH — signed gap to the nearest ledger row carrying the gold key
+    within 0 days   74.911%
+    within +/-1       78.617%
+    within +/-2       82.258%
+    within +/-3       86.032%
+    within +/-5       93.011%
+    within +/-7       100.000%
+    within +/-14      100.000%
+    within +/-30      100.000%
+    within +/-60      100.000%
+    |gap| median 0.0, p90 5.0, p99 7.0, max 7.0 days
+    ledger BEFORE statement 12.519%, same day 74.911%, AFTER 12.570%
+    This is the distribution the window has to cover. Everything below is
+    the retriever's response to it.
+    0                          ceiling  67.457%  top1  66.952%  match  66.952%  (4.6s)
+    +/-1                       ceiling  70.786%  top1  70.254%  match  70.254%  (11.4s)
+    +/-2                       ceiling  74.052%  top1  73.485%  match  73.485%  (18.5s)
+    +/-3                       ceiling  77.443%  top1  76.864%  match  76.864%  (25.7s)
+    +/-5                       ceiling  83.744%  top1  83.108%  match  83.108%  (40.2s)
+    +/-7                       ceiling  90.026%  top1  89.328%  match  89.328%  (61.2s)
+    +/-14                      ceiling  90.026%  top1  89.328%  match  89.328%  (113.8s)
+    +/-30                      ceiling  90.026%  top1  89.328%  match  89.328%  (223.8s)
+    +/-60                      ceiling  90.026%  top1  89.328%  match  89.328%  (357.0s)
+    unbounded                  ceiling  90.026%  top1  89.328%  match  89.328%  (405.8s)
+    ledger-before only, 7      ceiling  78.700%  top1  78.097%  match  78.097%  (33.0s)
+    statement-before only, 7   ceiling  78.783%  top1  78.183%  match  78.183%  (32.8s)
+    ledger-before only, 30     ceiling  78.700%  top1  78.097%  match  78.097%  (109.8s)
+    statement-before only, 30  ceiling  78.783%  top1  78.183%  match  78.183%  (110.8s)
+
+------------------------------------------------------------------------------------------------
+FULL SWEEP — synthetic 50,000-group
+------------------------------------------------------------------------------------------------
+
+  window                     pool(date) pool(+amt)  ceiling%    top1%    top5%   match%    prec%  abstain%   secs
+  ---------------------------------------------------------------------------------------------------------------
+  0                             1151.53       0.79    67.457   66.952   67.457   66.952   98.010    32.322    4.6
+  +/-1                          3440.71       0.88    70.786   70.254   70.786   70.254   96.163    27.454   11.4
+  +/-2                          5717.09       0.97    74.052   73.485   74.052   73.485   95.088    23.142   18.5
+  +/-3                          7977.06       1.07    77.443   76.864   77.443   76.864   94.627    19.204   25.7
+  +/-5                         12442.82       1.25    83.744   83.108   83.744   83.108   94.602    12.686   40.2
+  +/-7 *                       16823.55       1.43    90.026   89.328   90.026   89.328   95.768     7.426   61.2
+  +/-14                        31350.83       1.48    90.026   89.328   90.026   89.328   95.587     7.226  113.8
+  +/-30                        59757.13       1.58    90.026   89.328   90.026   89.328   95.372     6.990  223.8
+  +/-60                        95524.20       1.71    90.026   89.328   90.026   89.328   95.153     6.758  357.0
+  unbounded                   108534.00       1.76    90.026   89.328   90.026   89.328   95.097     6.694  405.8
+  ledger-before only, 7         8989.76       1.11    78.700   78.097   78.700   78.097   94.453    17.718   33.0
+  statement-before only, 7      8985.31       1.11    78.783   78.183   78.783   78.183   94.345    17.630   32.8
+  ledger-before only, 30       30472.99       1.18    78.700   78.097   78.700   78.097   93.671    17.008  109.8
+  statement-before only, 30     30435.66       1.19    78.783   78.183   78.783   78.183   93.554    16.916  110.8
+
+  * shipped. pool(date) is candidates after currency+account+date blocking;
+    pool(+amt) after the 0.01 amount tolerance, which is what gets ranked.
+
+------------------------------------------------------------------------------------------------
+GENERATOR GROUND TRUTH — what timing variation was injected
+------------------------------------------------------------------------------------------------
+
+    dates                                        {'start': '2023-03-01', 'end': '2023-05-31'}
+    timing                                       {'min_days': 1, 'max_days': 7}
+
+------------------------------------------------------------------------------------------------
+WHERE IT MOVES — synthetic 50,000-group
+------------------------------------------------------------------------------------------------
+
+  window        ceiling%  d ceiling   match%  d match    prec%     pool
+  ---------------------------------------------------------------------
+  0               67.457              66.952            98.010     0.79
+  +/-1            70.786     +3.329   70.254   +3.302   96.163     0.88
+  +/-2            74.052     +3.266   73.485   +3.232   95.088     0.97
+  +/-3            77.443     +3.391   76.864   +3.378   94.627     1.07
+  +/-5            83.744     +6.301   83.108   +6.244   94.602     1.25
+  +/-7 *          90.026     +6.282   89.328   +6.220   95.768     1.43
+  +/-14           90.026     +0.000   89.328   +0.000   95.587     1.48
+  +/-30           90.026     +0.000   89.328   +0.000   95.372     1.58
+  +/-60           90.026     +0.000   89.328   +0.000   95.153     1.71
+  unbounded       90.026     +0.000   89.328   +0.000   95.097     1.76
+
+  1. THE CEILING — what blocking makes reachable at all
+     0 days 67.457%  ->  unbounded 90.026%   total span 22.569 pts
+     narrowest window within 0.1 pts of the maximum: +/-7 (90.026%)
+     The window matters: 22.569 points separate the narrowest setting
+     from the widest, and the curve saturates at +/-7.
+
+  2. RANKING — what widening costs
+     match     0 days 66.952%  ->  unbounded 89.328%   (+22.376 pts)
+     precision 0 days 98.010%  ->  unbounded 95.097%   (-2.913 pts)
+     pool      0 days 0.79  ->  unbounded 1.76 candidates per query
+
+  3. IS +/-7 ON A PLATEAU OR AN EDGE?
+     ceiling at +/-7                        90.026%
+     lost by narrowing to +/-3              12.583 pts
+     gained by widening to +/-30            0.000 pts
+     match rate given up by widening to +/-30  0.000 pts
+     EDGE. The ceiling is still climbing steeply below +/-7 and flattens at
+     or just past it: +/-3 gives up 12.583 points that +/-7 recovers,
+     while going out to +/-30 adds only 0.000. +/-7 sits at the knee,
+     which means it is the right value for THIS timing distribution and
+     would be the wrong one for a slower-settling batch.
+
+  4. ASYMMETRIC — settlement delay runs in one direction
+     ledger-before only, 7      ceiling  78.700% (-11.326)  match  78.097% (-11.230)  pool   1.11 (-0.32)
+     statement-before only, 7   ceiling  78.783% (-11.243)  match  78.183% (-11.145)  pool   1.11 (-0.32)
+     ledger-before only, 30     ceiling  78.700% (-11.326)  match  78.097% (-11.230)  pool   1.18 (-0.40)
+     statement-before only, 30  ceiling  78.783% (-11.243)  match  78.183% (-11.145)  pool   1.19 (-0.39)
+     One-sided at 7 costs 11.243 points of ceiling against the symmetric window while
+     roughly halving the pool. Which side matters more is a property of the
+     data's own timing, printed as ground truth at the top of this section.
+
+================================================================================================
+done
+================================================================================================

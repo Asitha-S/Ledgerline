@@ -212,6 +212,157 @@ def reference_from_score_log(data_dir):
     return out if out["match_rate_pct"] is not None else None
 
 
+GATE_LABELS = {
+    "exact keys > 1": ("multi_exact", "More than one exact-amount candidate key"),
+    "dup_ref":        ("dup_ref",     "Duplicate reference among candidates"),
+    "keys>1 or dup":  ("either",      "Either rule fires"),
+}
+
+
+def gates_from_driftgate_log(data_dir, batch_name):
+    """The gate pricing table driftgate.py printed, for one batch.
+
+    driftgate.py measures what each candidate control would have cost had it been
+    applied to decisions already made. Nothing here re-decides anything: the numbers
+    are lifted verbatim so the interface can show the trade instead of describing it.
+
+    Only three of the five gates driftgate.py prices are carried, because they are the
+    three the interface offers: the multi-exact-key rule, the duplicate-reference rule,
+    and their union. The row-count variant of the first is deliberately left out — it
+    counts candidate ROWS rather than allocation keys, and driftgate.py explains at
+    length why that is the wrong count. Returns None if the log is absent."""
+    fp = os.path.join(data_dir, "driftgate.log")
+    if not os.path.exists(fp):
+        return None
+    txt = open(fp, encoding="utf-8", errors="replace").read()
+
+    # each batch has its own PRICING section; take the one under this batch's heading
+    i = txt.find("POOL STRUCTURE vs DRIFT OUTCOME — " + batch_name)
+    if i < 0:
+        return None
+    j = txt.find("POOL STRUCTURE vs DRIFT OUTCOME", i + 1)
+    blk = txt[i:j if j > 0 else len(txt)]
+
+    base = re.search(r"current\s+coverage ([\d.]+)%\s+precision ([\d.]+)%\s+"
+                     r"\(([\d,]+) of ([\d,]+) auto-closed, ([\d,]+) correct\)", blk)
+    if not base:
+        return None
+
+    n = lambda x: int(x.replace(",", ""))
+    states = [{
+        "key": "none", "label": "No gate (shipped)", "shipped": True,
+        "escalates": 0, "wrong_caught": 0, "zero_drift_caught": 0,
+        "nonzero_drift_caught": 0, "bounded_caught": 0, "correct_given_up": 0,
+        "correct_per_wrong": None,
+        "coverage_pct": float(base.group(1)), "precision_pct": float(base.group(2)),
+        "auto_closed": n(base.group(3)), "records": n(base.group(4)),
+        "correct": n(base.group(5)),
+    }]
+
+    #  gate            escalates wrong d=0 d!=0 bnd  correct_esc ok/wrong coverage precision pts/pt
+    row = re.compile(r"^  (.{1,16}?)\s{2,}([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+([\d,]+)\s+"
+                     r"([\d,]+)\s+([\d,]+)\s+([\d.]+)\s+([\d.]+)%\s+([\d.]+)%\s+"
+                     r"([\d.]+|n/a)\s*$", re.M)
+    found = {}
+    for m in row.finditer(blk):
+        name = m.group(1).strip()
+        if name not in GATE_LABELS:
+            continue
+        key, label = GATE_LABELS[name]
+        found[key] = {
+            "key": key, "label": label, "rule": name, "shipped": False,
+            "escalates": n(m.group(2)), "wrong_caught": n(m.group(3)),
+            "zero_drift_caught": n(m.group(4)), "nonzero_drift_caught": n(m.group(5)),
+            "bounded_caught": n(m.group(6)), "correct_given_up": n(m.group(7)),
+            "correct_per_wrong": float(m.group(8)),
+            "coverage_pct": float(m.group(9)), "precision_pct": float(m.group(10)),
+            "points_per_point": None if m.group(11) == "n/a" else float(m.group(11)),
+        }
+    if len(found) != 3:
+        return None
+    for k in ("multi_exact", "dup_ref", "either"):
+        states.append(found[k])
+
+    # how many invisible errors exist at all, so the catch can be shown as a fraction
+    z = re.search(r"zero-drift wrong postings \(invisible to a balance check\)\s+([\d,]+)",
+                  blk)
+    return {
+        "batch": batch_name,
+        "invisible_total": n(z.group(1)) if z else None,
+        "states": states,
+        "note": ("Tested against decisions already made and NOT adopted. The toggle is "
+                 "here so the trade can be seen rather than described."),
+    }
+
+
+def operating_points_from_complete_log(data_dir):
+    """complete.py's completion-threshold sweep, 0.50 to 0.95, plus completion OFF.
+
+    The shipped operating point is 0.50. complete.py prints the table and explicitly
+    declines to pick a row; this lifts it so the interface can let a reader move along
+    it. Measured on BenchRec eval only — there is no comparable sweep for a batch we
+    generated, so it rides with eval. Returns None if the table is absent."""
+    fp = os.path.join(data_dir, "complete.log")
+    if not os.path.exists(fp):
+        return None
+    txt = open(fp, encoding="utf-8", errors="replace").read()
+    i = txt.find("threshold  overall_match_%")
+    if i < 0:
+        return None
+
+    pts, off = [], None
+    for line in txt[i:].split("\n")[1:]:
+        m = re.match(r"\s*(OFF|[\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+"
+                     r"([\d.]+)\s+([\d.]+)\s+(\d+)\s+(\d+)\s+(-?\d+)\s*$", line)
+        if not m:
+            break
+        rec = {
+            "overall_match_pct": float(m.group(2)),
+            "overall_precision_pct": float(m.group(3)),
+            "single_match_pct": float(m.group(4)),
+            "single_precision_pct": float(m.group(5)),
+            "multi_match_pct": float(m.group(6)),
+            "gained": int(m.group(7)), "lost": int(m.group(8)), "net": int(m.group(9)),
+        }
+        if m.group(1) == "OFF":
+            rec["threshold"] = None
+            off = rec
+        else:
+            rec["threshold"] = float(m.group(1))
+            rec["shipped"] = rec["threshold"] == 0.5
+            pts.append(rec)
+    if not pts or off is None:
+        return None
+
+    # The flat band, derived rather than asserted. TOL is deliberately tight: across
+    # 0.50-0.65 the match rate moves 0.0156 pts and the next step out is 0.0562, a
+    # 3.6x jump. 0.02 separates those cleanly without being fitted to an answer.
+    TOL = 0.02
+    top = pts[0]["overall_match_pct"]
+    band = [p["threshold"] for p in pts if abs(p["overall_match_pct"] - top) <= TOL]
+    band_end = band[0]
+    for t in band:
+        if all(abs(q["overall_match_pct"] - top) <= TOL
+               for q in pts if pts[0]["threshold"] <= q["threshold"] <= t):
+            band_end = t
+    inband = [p for p in pts if p["threshold"] <= band_end]
+
+    return {
+        "measured_on": "BenchRec eval",
+        "shipped_threshold": 0.5,
+        "completion_off": off,
+        "points": pts,
+        "flat_band": {
+            "from": pts[0]["threshold"], "to": band_end,
+            "spread_pts": round(max(p["overall_match_pct"] for p in inband)
+                                - min(p["overall_match_pct"] for p in inband), 4),
+            "note": ("Overall match rate varies by 0.0156 points across this band, so "
+                     "the operating point is a range rather than an optimum. "
+                     "complete.py prints the table and declines to pick a row."),
+        },
+    }
+
+
 def regimes_from_findings_log(data_dir):
     """The multi-key regime split on both splits, read out of findings.py's output.
 
@@ -501,6 +652,101 @@ def build_detail(rec, investigation, b_row=None, currency="USD"):
 # ----------------------------------------------------------------------------------
 # Cross-check against exposure.py
 # ----------------------------------------------------------------------------------
+def check_gates(batch, summary, gates, failures):
+    """Every gate figure must reconstruct from the batch's own row counts.
+
+    driftgate.log is the source, but agreeing with itself proves nothing. These are the
+    identities that tie its table back to the audit export.py computed independently:
+    the no-gate state must equal this batch's real coverage and precision, and each
+    gate's post-gate figures must follow from the rows it escalates."""
+    if not gates:
+        return
+    k = batch["key"]
+    recs = summary["records_processed"]
+    auto = summary["auto_closed"]
+    prec = summary["auto_close_precision_by_rows_pct"]
+    correct = int(round(auto * prec / 100.0))
+
+    def cmp(label, mine, theirs, tol=0.0):
+        if mine is None or theirs is None:
+            failures.append(f"{k}: gates {label} missing "
+                            f"(driftgate={mine}, export={theirs})")
+        elif abs(float(mine) - float(theirs)) > tol:
+            failures.append(f"{k}: gates {label} MISMATCH "
+                            f"driftgate.log={mine} export={theirs}")
+
+    base = gates["states"][0]
+    cmp("baseline records", base["records"], recs)
+    cmp("baseline auto-closed", base["auto_closed"], auto)
+    cmp("baseline correct", base["correct"], correct, tol=1)
+    cmp("baseline coverage", base["coverage_pct"], summary["auto_close_rate_pct"],
+        tol=0.001)
+    cmp("baseline precision", base["precision_pct"], prec, tol=0.001)
+
+    for st in gates["states"][1:]:
+        g, esc = st["key"], st["escalates"]
+        # a gate escalates exactly the rows it catches, right ones and wrong ones
+        cmp(f"{g} escalates = wrong + correct",
+            esc, st["wrong_caught"] + st["correct_given_up"])
+        # and the wrong ones it catches are exactly the three drift outcomes
+        cmp(f"{g} wrong = zero + nonzero + bounded", st["wrong_caught"],
+            st["zero_drift_caught"] + st["nonzero_drift_caught"]
+            + st["bounded_caught"])
+        # the resulting operating point follows from the rows that remain
+        left = auto - esc
+        if left <= 0:
+            failures.append(f"{k}: gates {g} escalates every auto-closed row")
+            continue
+        cmp(f"{g} coverage", st["coverage_pct"], left / recs * 100, tol=0.001)
+        cmp(f"{g} precision", st["precision_pct"],
+            (correct - st["correct_given_up"]) / left * 100, tol=0.002)
+        if st["wrong_caught"]:
+            cmp(f"{g} correct-per-wrong", st["correct_per_wrong"],
+                st["correct_given_up"] / st["wrong_caught"], tol=0.05)
+        # a gate cannot catch more invisible errors than exist
+        if gates["invisible_total"] is not None \
+                and st["zero_drift_caught"] > gates["invisible_total"]:
+            failures.append(f"{k}: gates {g} catches {st['zero_drift_caught']} "
+                            f"zero-drift rows but only {gates['invisible_total']} exist")
+
+
+def check_operating_points(summary, ops, failures):
+    """The shipped row of the sweep must be the batch's own headline figures.
+
+    complete.log's threshold 0.5 row IS the configuration controller.py ran, so its
+    overall match and precision have to equal the ones computed from the audit. If they
+    ever diverge, the sweep is describing a different pipeline than the one that ran."""
+    if not ops:
+        return
+
+    def cmp(label, mine, theirs, tol=0.0):
+        if mine is None or theirs is None:
+            failures.append(f"eval: operating points {label} missing")
+        elif abs(float(mine) - float(theirs)) > tol:
+            failures.append(f"eval: operating points {label} MISMATCH "
+                            f"complete.log={mine} export={theirs}")
+
+    ship = next((p for p in ops["points"] if p.get("shipped")), None)
+    if ship is None:
+        failures.append("eval: operating points carry no shipped threshold")
+        return
+    cmp("shipped overall match vs audit", ship["overall_match_pct"],
+        summary["overall_match_pct"], tol=0.001)
+    cmp("shipped overall precision vs audit", ship["overall_precision_pct"],
+        summary["overall_precision_pct"], tol=0.001)
+    for pt in ops["points"]:
+        if pt["gained"] - pt["lost"] != pt["net"]:
+            failures.append(f"eval: operating point {pt['threshold']} "
+                            f"gained-lost != net ({pt['gained']}-{pt['lost']}"
+                            f" != {pt['net']})")
+    # completion off must be the zero-change row
+    off = ops["completion_off"]
+    if (off["gained"], off["lost"], off["net"], off["multi_match_pct"]) != (0, 0, 0, 0.0):
+        failures.append("eval: completion-off row is not the null row "
+                        f"({off['gained']}/{off['lost']}/{off['net']}/"
+                        f"{off['multi_match_pct']})")
+
+
 def cross_check(data_dir, batch, summary, curve, failures):
     """Run exposure.py's own implementation in-process and require agreement."""
     buf = io.StringIO()
@@ -622,6 +868,7 @@ def _main():
     throughput = throughput_from_ctrl_log(data_dir)
     reference = reference_from_score_log(data_dir)
     regimes = regimes_from_findings_log(data_dir)
+    op_points = operating_points_from_complete_log(data_dir)
     _log(f"  investigations available: {len(investigations)}")
     _log(f"  regimes from findings.log: "
          + (f"train {regimes['train']} / eval {regimes['eval']}" if regimes
@@ -630,6 +877,10 @@ def _main():
          + (f"{reference['source_file']} at {reference['match_rate_pct']}% / "
             f"{reference['match_precision_pct']}%" if reference else "not available"))
     _log(f"  throughput parsed from ctrl.log for: {sorted(throughput) or 'none'}")
+    _log(f"  operating points from complete.log: "
+         + (f"{len(op_points['points'])} thresholds, flat band "
+            f"{op_points['flat_band']['from']}-{op_points['flat_band']['to']}"
+            if op_points else "not available"))
     _log()
 
     _log(f"  exporting batches: {[b['key'] for b in batches]}"
@@ -655,11 +906,21 @@ def _main():
         # eval. It says nothing about a batch we generated, so it rides with eval only.
         if batch["key"] == "eval" and regimes:
             summary["regimes"] = regimes
+        # The gate comparison is measured per batch by driftgate.py, so both carry one.
+        gates = gates_from_driftgate_log(data_dir, batch["name"])
+        if gates:
+            summary["gates"] = gates
+        # The completion sweep was run on eval only; there is no synthetic counterpart.
+        if batch["key"] == "eval" and op_points:
+            summary["operating_points"] = op_points
         curve = compute_curve(recs)
 
         _log(f"  {batch['name']}: {len(recs):,} records, "
              f"{summary['escalated']:,} escalated")
         cross_check(data_dir, batch, summary, curve, failures)
+        check_gates(batch, summary, gates, failures)
+        if batch["key"] == "eval":
+            check_operating_points(summary, op_points, failures)
 
         files.append((f"summary_{batch['key']}.json",
                       _write(os.path.join(out_root, f"summary_{batch['key']}.json"), summary)))

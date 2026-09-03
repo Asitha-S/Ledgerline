@@ -270,7 +270,10 @@ def check_width(pw, port, width, height, failures, written):
         """() => { const el = document.getElementById('queue');
              window.scrollTo(0, el.getBoundingClientRect().top + window.scrollY - 120); }""")
     page.wait_for_timeout(350)
-    page.click(".qrow")
+    # The class pill inside a row is its own control (it filters), and at narrower
+    # widths it sits under the row's centre point, which is where a bare .qrow click
+    # lands. Target the rank cell: always present, never interactive.
+    page.click(".qrow .rank")
     page.wait_for_selector(".drawer .body h3", timeout=20000)
     page.wait_for_timeout(500)
     written.append(shoot(page, f"{len(SECTIONS) + 2:02d}-detail", width, height))

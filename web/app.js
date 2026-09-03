@@ -291,6 +291,39 @@ function useCountUp(target, ms = 700) {
   return v;
 }
 
+/* useCountUp always starts from zero, which is right on first paint and wrong for a
+ * toggle: flipping a control would drop the figure to 0 and climb back. useTween moves
+ * from whatever is on screen to the new target instead, so switching between two
+ * precomputed states reads as the figure moving between them. It computes nothing —
+ * both endpoints are values exported by export.py. */
+function useTween(target, ms = 520) {
+  const reduced = prefersReducedMotion();
+  const [v, setV] = useState(target);
+  const from = useRef(target);
+  useEffect(() => {
+    if (reduced || typeof requestAnimationFrame === "undefined") {
+      from.current = target; setV(target); return;
+    }
+    const a = from.current;
+    if (a === target) return;
+    let raf = 0, t0 = 0;
+    const step = (t) => {
+      if (!t0) t0 = t;
+      const k = Math.min(1, (t - t0) / ms);
+      const cur = a + (target - a) * easeOut(k);
+      from.current = cur; setV(cur);
+      if (k < 1) raf = requestAnimationFrame(step);
+      else { from.current = target; setV(target); }
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target, ms, reduced]);
+  return v;
+}
+
+const TweenPct = ({ value, dp = 3 }) => html`<span>${pct(useTween(value), dp)}</span>`;
+const TweenInt = ({ value }) => html`<span>${int(Math.round(useTween(value)))}</span>`;
+
 const CountPct = ({ value, dp = 2 }) => html`<span>${pct(useCountUp(value), dp)}</span>`;
 const CountInt = ({ value }) => html`<span>${int(Math.round(useCountUp(value)))}</span>`;
 const CountMoneyShort = ({ cents }) =>
@@ -441,9 +474,6 @@ function Rail({ active, onGo, onTour, tourTaken }) {
                 : "Walk through the whole page in eight steps"}>
         ${TOUR_PLAY}Play tour
       </button>
-      <div class="rail-foot">
-        Static export. Nothing is recomputed in the browser.
-      </div>
     </nav>`;
 }
 
@@ -530,7 +560,7 @@ const BANDS = 6;             // how many independent breathing cycles
  * long, offset cycles. Both are pure CSS off per-cell custom properties, so the main
  * thread is not running 3,133 timers. */
 function Treemap({ queue, W = 1600, H = 720, fit = "xMidYMid meet", cells: given,
-                   floor = 0.46, highlight = -1, animate = false }) {
+                   floor = 0.46, highlight = -1, animate = false, dimClass = null }) {
   const cells = useMemo(() => given || treemapCells(queue, W, H), [given, queue, W, H]);
   const maxA = cells.length ? cells[0].w * cells[0].h : 1;
   const big = highlight >= 0 ? cells[highlight] : null;
@@ -540,7 +570,10 @@ function Treemap({ queue, W = 1600, H = 720, fit = "xMidYMid meet", cells: given
     const rel = Math.sqrt((c.w * c.h) / maxA);
     const gap = 2.4 + 7 * rel;
     const w = Math.max(c.w - gap, 0.4), h = Math.max(c.h - gap, 0.4);
-    const o = floor + (1 - floor) * rel;
+    let o = floor + (1 - floor) * rel;
+    // Filtering dims rather than removes: every rectangle keeps its area, so the share
+    // of the queue a class occupies stays readable next to the rest.
+    if (dimClass && c.item.cls !== dimClass) o *= 0.16;
     return html`
       <rect key=${i} x=${(c.x + gap / 2).toFixed(2)} y=${(c.y + gap / 2).toFixed(2)}
             width=${w.toFixed(2)} height=${h.toFixed(2)}
@@ -591,12 +624,14 @@ function Treemap({ queue, W = 1600, H = 720, fit = "xMidYMid meet", cells: given
     </svg>`;
 }
 
-function Overview({ summary, queue, complete, batchLine }) {
+function Overview({ summary, queue, complete, batchLine, filter, onFilter }) {
   const [ref, seen] = useReveal();
   const v = summary.value;
   const top = (queue.queue || [])[0];
   const classes = (summary.exception_classes || [])
     .slice().sort((a, b) => b.exposure_cents - a.exposure_cents);
+  // The chip's counts come from the exported class row, not from re-summing the queue.
+  const hit = filter ? classes.find((c) => c.exception_class === filter) : null;
 
   return html`
     <section id="overview" ref=${ref} class=${"reveal" + (seen ? " in" : "")}>
@@ -612,7 +647,7 @@ function Overview({ summary, queue, complete, batchLine }) {
 
         <div class="stage">
           <div class="treemap-wrap">${complete
-            ? html`<${Treemap} queue=${queue.queue} />`
+            ? html`<${Treemap} queue=${queue.queue} dimClass=${filter} />`
             : html`<div class="map-wait">${
                 `Loading all ${int(queue.rows)} escalated transactions…`
               }</div>`}</div>
@@ -647,6 +682,11 @@ function Overview({ summary, queue, complete, batchLine }) {
               }</div>
             </div>` : ""}
         </div>
+
+        <${ClassLegend} classes=${classes} filter=${filter} onPick=${onFilter} />
+        ${hit ? html`<${FilterChip} cls=${filter} rows=${hit.rows}
+                                    exposure=${hit.exposure_cents} of=${queue.rows}
+                                    onClear=${onFilter} />` : ""}
 
         <div class="metrics">
           <${MetricCard} bg=${CARD_HUE[0]} glyph="circle" label="Records processed"
@@ -686,19 +726,253 @@ function Fig({ label, value, right, tone }) {
 /* Categorised, not alarming: the class hue as a wash behind the word, and the word
  * itself in the darkened hue at full strength. A column of these reads as a taxonomy;
  * a column of saturated fills reads as 3,133 alerts. */
-function ClassPill({ name }) {
+/* A pill is a filter control wherever a filter is available, and inert text where one
+ * is not — the class table, the queue and the legend all pass onPick. Filtering only
+ * ever hides or dims rows that are already exported; nothing is recounted here. */
+function ClassPill({ name, onPick, active = false, muted = false }) {
   const h = hueFor(name);
-  return html`<span class="pill" style=${{ background: tint(h, .15), color: inkFor(name),
-                                           borderColor: tint(h, .40) }}>${name}</span>`;
+  const style = { background: tint(h, active ? .34 : .15), color: inkFor(name),
+                  borderColor: tint(h, active ? .85 : .40),
+                  opacity: muted ? .38 : 1 };
+  if (!onPick) return html`<span class="pill" style=${style}>${name}</span>`;
+  return html`<button type="button"
+      class=${"pill pill-btn" + (active ? " on" : "")}
+      style=${style}
+      aria-pressed=${active}
+      title=${active ? "Clear this filter" : `Filter everything to ${name}`}
+      onClick=${(e) => { e.stopPropagation(); onPick(active ? null : name); }}>${name}</button>`;
 }
 
-function Summary({ s, batchLine }) {
+/* Shown at the top of every section the filter touches, so the reader is never looking
+ * at a filtered figure without being told. Counts come from the exported rows. */
+function FilterChip({ cls, rows, exposure, of, onClear }) {
+  if (!cls) return "";
+  const h = hueFor(cls);
+  return html`
+    <div class="fchip" style=${{ borderColor: tint(h, .55), background: tint(h, .10) }}>
+      <span class="fchip-dot" style=${{ background: h }} aria-hidden="true"></span>
+      <span class="fchip-k">Filtered to</span>
+      <span class="fchip-v" style=${{ color: inkFor(cls) }}>${cls}</span>
+      <span class="fchip-n num">${int(rows)}${of ? ` of ${int(of)}` : ""} rows</span>
+      <span class="fchip-n num">${money(exposure)} ${CURRENCY}</span>
+      <button type="button" class="fchip-x" onClick=${() => onClear(null)}
+              title="Clear filter">clear</button>
+    </div>`;
+}
+
+/* The treemap has no legend of its own; this doubles as one and as the filter control
+ * for the section. Order matches the class table: largest exposure first. */
+function ClassLegend({ classes, filter, onPick }) {
+  if (!classes || !classes.length) return "";
+  return html`
+    <div class="tmlegend">
+      ${classes.map((c) => html`
+        <${ClassPill} key=${c.exception_class} name=${c.exception_class}
+                      onPick=${onPick} active=${filter === c.exception_class}
+                      muted=${!!filter && filter !== c.exception_class} />`)}
+    </div>`;
+}
+
+/* ---------------------------------------------------------------- control gates
+ *
+ * driftgate.py priced three candidate controls against decisions controller.py had
+ * already made. Flipping a toggle here recomputes nothing and re-decides nothing: it
+ * selects one of four precomputed states exported in summary.gates and moves the two
+ * figures to that state's values. Every number below was measured by driftgate.py and
+ * checked by export.py against this batch's own row counts before it was written. */
+
+function GateToggles({ gates }) {
+  const [multi, setMulti] = useState(false);
+  const [dup, setDup] = useState(false);
+
+  const key = multi && dup ? "either" : multi ? "multi_exact" : dup ? "dup_ref" : "none";
+  const byKey = useMemo(() => {
+    const m = {};
+    (gates.states || []).forEach((st) => { m[st.key] = st; });
+    return m;
+  }, [gates]);
+  const st = byKey[key] || byKey.none;
+  const base = byKey.none;
+  if (!st || !base) return "";
+
+  const on = key !== "none";
+  const dCov = st.coverage_pct - base.coverage_pct;
+  const dPre = st.precision_pct - base.precision_pct;
+  const inv = gates.invisible_total;
+
+  const Toggle = ({ label, sub, checked, onChange }) => html`
+    <button type="button" class=${"gtoggle" + (checked ? " on" : "")}
+            role="switch" aria-checked=${checked} onClick=${() => onChange(!checked)}>
+      <span class="gt-track" aria-hidden="true"><span class="gt-knob"></span></span>
+      <span class="gt-text">
+        <span class="gt-lab">${label}</span>
+        <span class="gt-sub">${sub}</span>
+      </span>
+    </button>`;
+
+  return html`
+    <div class="gates panel">
+      <div class="gates-head">
+        <h3 class="eyebrow">If a second control were added</h3>
+        <span class=${"gates-state" + (on ? " on" : "")}>${
+          on ? "hypothetical" : "as shipped"}</span>
+      </div>
+
+      <div class="gates-toggles">
+        <${Toggle} label="More than one exact-amount candidate key"
+                   sub="escalate when the pool offered more than one exact match"
+                   checked=${multi} onChange=${setMulti} />
+        <${Toggle} label="Duplicate reference among candidates"
+                   sub="escalate when the pool contained a repeated reference"
+                   checked=${dup} onChange=${setDup} />
+      </div>
+
+      <div class="gates-figs">
+        <div class="gfig">
+          <div class="k">Auto-close coverage</div>
+          <div class="v num"><${TweenPct} value=${st.coverage_pct} dp=${3} /></div>
+          <div class=${"gd num " + (dCov < 0 ? "dn" : dCov > 0 ? "up" : "")}>${
+            on ? (dCov >= 0 ? "+" : "\u2212") + nf(3, 3).format(Math.abs(dCov)) + " pts" : "\u2014"}</div>
+        </div>
+        <div class="gfig">
+          <div class="k">Auto-close precision</div>
+          <div class="v num"><${TweenPct} value=${st.precision_pct} dp=${3} /></div>
+          <div class=${"gd num " + (dPre > 0 ? "up" : dPre < 0 ? "dn" : "")}>${
+            on ? (dPre >= 0 ? "+" : "\u2212") + nf(3, 3).format(Math.abs(dPre)) + " pts" : "\u2014"}</div>
+        </div>
+        <div class="gfig cost">
+          <div class="k">What it costs</div>
+          <div class="v num">${on ? nf(1, 1).format(st.correct_per_wrong) : "\u2014"}</div>
+          <div class="gd">${on
+            ? "correct auto-closes given up per wrong posting caught"
+            : "no rows given up"}</div>
+        </div>
+      </div>
+
+      <div class="gates-detail">
+        <div>
+          <span class="gk">Rows escalated</span>
+          <span class="gv num"><${TweenInt} value=${st.escalates} /></span>
+        </div>
+        <div>
+          <span class="gk">Wrong postings caught</span>
+          <span class="gv num">${on
+            ? `${int(st.wrong_caught)}  (${int(st.zero_drift_caught)} invisible, ` +
+              `${int(st.nonzero_drift_caught)} visible, ${int(st.bounded_caught)} undetermined)`
+            : "\u2014"}</span>
+        </div>
+        <div>
+          <span class="gk">Invisible errors caught</span>
+          <span class="gv num">${on && inv !== null
+            ? `${int(st.zero_drift_caught)} of ${int(inv)}` : "\u2014"}</span>
+        </div>
+        <div>
+          <span class="gk">Correct auto-closes given up</span>
+          <span class="gv num">${on ? int(st.correct_given_up) : "\u2014"}</span>
+        </div>
+      </div>
+
+      <p class="note-sm gates-note">${gates.note}</p>
+    </div>`;
+}
+
+/* ---------------------------------------------------------------- operating point
+ *
+ * complete.py swept the set-completion threshold from 0.50 to 0.95 and printed the
+ * table without picking a row. The slider walks that table. Moving it changes which
+ * exported row is displayed and nothing else — no model runs, no answer is re-scored. */
+
+function OperatingPoint({ ops }) {
+  const pts = ops.points;
+  const shipIdx = Math.max(0, pts.findIndex((p) => p.shipped));
+  const [i, setI] = useState(shipIdx);
+  const p = pts[Math.min(i, pts.length - 1)];
+  const off = ops.completion_off;
+  const band = ops.flat_band;
+  const inBand = p.threshold >= band.from && p.threshold <= band.to;
+
+  const d = (a, b) => {
+    const x = a - b;
+    return (x >= 0 ? "+" : "\u2212") + nf(3, 3).format(Math.abs(x));
+  };
+
+  return html`
+    <div class="opoint panel">
+      <div class="gates-head">
+        <h3 class="eyebrow">Operating point — set-completion threshold</h3>
+        ${p.shipped ? html`<span class="gates-state">as shipped</span>` : ""}
+      </div>
+
+      <div class="op-slider">
+        <input type="range" min="0" max=${pts.length - 1} step="1" value=${i}
+               aria-label="Set-completion threshold"
+               onInput=${(e) => setI(+e.currentTarget.value)} />
+        <div class="op-ticks" aria-hidden="true">
+          ${pts.map((q, k) => html`
+            <span key=${q.threshold}
+                  class=${"op-tick" + (q.shipped ? " ship" : "") +
+                          (q.threshold >= band.from && q.threshold <= band.to ? " band" : "") +
+                          (k === i ? " at" : "")}
+                  style=${{ left: (k / (pts.length - 1)) * 100 + "%" }}>
+              <b>${nf(2, 2).format(q.threshold)}</b>
+            </span>`)}
+        </div>
+      </div>
+
+      <div class="op-figs">
+        <div class="ofig">
+          <div class="k">Overall match rate</div>
+          <div class="v num"><${TweenPct} value=${p.overall_match_pct} dp=${4} /></div>
+          <div class="s num">${d(p.overall_match_pct, off.overall_match_pct)} vs completion off</div>
+        </div>
+        <div class="ofig">
+          <div class="k">Overall precision</div>
+          <div class="v num"><${TweenPct} value=${p.overall_precision_pct} dp=${4} /></div>
+          <div class="s num">${d(p.overall_precision_pct, off.overall_precision_pct)} vs completion off</div>
+        </div>
+        <div class="ofig">
+          <div class="k">Single-key precision</div>
+          <div class="v num"><${TweenPct} value=${p.single_precision_pct} dp=${4} /></div>
+          <div class="s num">${d(p.single_precision_pct, off.single_precision_pct)} vs completion off</div>
+        </div>
+        <div class="ofig">
+          <div class="k">Multi-key match rate</div>
+          <div class="v num"><${TweenPct} value=${p.multi_match_pct} dp=${4} /></div>
+          <div class="s num">${off.multi_match_pct === 0
+            ? "0 without completion — every multi-key answer comes from it"
+            : d(p.multi_match_pct, off.multi_match_pct) + " vs completion off"}</div>
+        </div>
+      </div>
+
+      <div class="op-rows">
+        <span class="gk">Rows against completion off</span>
+        <span class="op-gain num">+${int(p.gained)} gained</span>
+        <span class="op-lose num">\u2212${int(p.lost)} lost</span>
+        <span class="op-net num">net ${p.net >= 0 ? "+" : "\u2212"}${int(Math.abs(p.net))}</span>
+      </div>
+
+      <p class="note-sm gates-note">${
+        `Shipped at ${nf(2, 2).format(ops.shipped_threshold)}. ` +
+        `${nf(2, 2).format(band.from)} to ${nf(2, 2).format(band.to)} is a flat band — ` +
+        `overall match rate moves ${nf(4, 4).format(band.spread_pts)} points across it, ` +
+        `so the choice is a range rather than an optimum. ` +
+        `Measured on ${ops.measured_on} by complete.py; the table is read from ` +
+        `complete.log at export time.` +
+        (inBand ? "" : " This point is outside that band.")
+      }</p>
+    </div>`;
+}
+
+function Summary({ s, batchLine, filter, onFilter }) {
   const [ref, seen] = useReveal();
   const v = s.value;
   const share = (c) => pct((c / v.total_batch) * 100, 2);
   const byRows = s.auto_close_precision_by_rows_pct;
   const byValue = s.auto_close_precision_by_value_pct;
   const gap = byValue - byRows;
+  const cls = (s.exception_classes || []).slice()
+    .sort((a, b) => b.exposure_cents - a.exposure_cents);
+  const hit = filter ? cls.find((c) => c.exception_class === filter) : null;
 
   return html`
     <section id="summary" ref=${ref} class=${"reveal" + (seen ? " in" : "")}>
@@ -800,19 +1074,33 @@ function Summary({ s, batchLine }) {
             }</p>
           </div>` : ""}
 
+        ${s.gates ? html`<${GateToggles} gates=${s.gates} />` : ""}
+        ${s.operating_points
+          ? html`<${OperatingPoint} ops=${s.operating_points} />`
+          : html`<p class="note-sm u-mt38">
+              No operating-point sweep for this batch. complete.py swept the
+              set-completion threshold on BenchRec eval only, and there is no comparable
+              sweep for a batch we generated ourselves, so rather than reuse eval's
+              curve under a synthetic label the control is not shown here.
+            </p>`}
+
         <div class="grid2 u-mt38">
           <div class="panel" style=${{ padding: "26px 28px 24px" }}>
             <h3 class="eyebrow u-mb10">Exception classes</h3>
+            ${hit ? html`<${FilterChip} cls=${filter} rows=${hit.rows}
+                                        exposure=${hit.exposure_cents}
+                                        onClear=${onFilter} />` : ""}
             <div class="tscroll"><table>
               <thead><tr>
                 <th>Class</th><th class="r">Rows</th>
                 <th class="r">Exposure (${CURRENCY})</th><th class="r">% of queue</th>
               </tr></thead>
               <tbody>
-                ${s.exception_classes.slice().sort((a, b) => b.exposure_cents - a.exposure_cents)
-                  .map((c) => html`
-                  <tr key=${c.exception_class}>
-                    <td><${ClassPill} name=${c.exception_class} /></td>
+                ${cls.map((c) => html`
+                  <tr key=${c.exception_class}
+                      class=${filter && filter !== c.exception_class ? "row-muted" : ""}>
+                    <td><${ClassPill} name=${c.exception_class} onPick=${onFilter}
+                                      active=${filter === c.exception_class} /></td>
                     <td class="r num">${int(c.rows)}</td>
                     <td class="r num">${money(c.exposure_cents)}</td>
                     <td class="r num">${pct(c.pct_of_queue_value, 1)}</td>
@@ -976,9 +1264,13 @@ function Regimes({ regimes, batchLine }) {
 const ROW_H = 52;
 const OVERSCAN = 8;
 
-function Queue({ queue, total, complete, selected, onSelect, batchLine }) {
+function Queue({ queue, total, complete, selected, onSelect, batchLine,
+                filter, onFilter }) {
   const [q, setQ] = useState("");
-  const [cls, setCls] = useState("");
+  // The class filter is shared with the treemap and the class table, so it lives in
+  // App rather than here; the <select> and the pills are two views of one value.
+  const cls = filter || "";
+  const setCls = (v) => onFilter(v || null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(588);
   const boxRef = useRef(null);
@@ -1042,6 +1334,10 @@ function Queue({ queue, total, complete, selected, onSelect, batchLine }) {
           }</span>
         </div>
 
+        ${filter ? html`<${FilterChip} cls=${filter} rows=${rows.length}
+                                       exposure=${rows.reduce((a, r) => a + r.exposure_cents, 0)}
+                                       of=${queue.length} onClear=${onFilter} />` : ""}
+
         <div class="qpanel">
           <div class="qhead">
             <div class="r">Rank</div>
@@ -1061,10 +1357,16 @@ function Queue({ queue, total, complete, selected, onSelect, batchLine }) {
                       const hue = hueFor(r.exception_class);
                       const barW = Math.max((r.exposure_cents / maxExposure) * 100, 0.6);
                       return html`
-                      <button key=${r.b_id}
-                              class=${"qrow" + (r.rank === 1 ? " top" : "")}
-                              role="option" aria-selected=${selected === r.b_id}
-                              onClick=${() => onSelect(r.b_id)}>
+                      <div key=${r.b_id}
+                           class=${"qrow" + (r.rank === 1 ? " top" : "")}
+                           role="option" tabIndex=${0}
+                           aria-selected=${selected === r.b_id}
+                           onClick=${() => onSelect(r.b_id)}
+                           onKeyDown=${(e) => {
+                             if (e.key === "Enter" || e.key === " ") {
+                               e.preventDefault(); onSelect(r.b_id);
+                             }
+                           }}>
                         <span class="rank num">${int(r.rank)}</span>
                         <span class="amtcell">
                           <span class="bar" aria-hidden="true" style=${{ background:
@@ -1073,11 +1375,12 @@ function Queue({ queue, total, complete, selected, onSelect, batchLine }) {
                             ` ${tint(hue, 0)} ${Math.min(barW + 16, 100).toFixed(2)}%)` }}></span>
                           <span class="amt num">${money(r.exposure_cents)}</span>
                         </span>
-                        <span><${ClassPill} name=${r.exception_class} /></span>
+                        <span><${ClassPill} name=${r.exception_class} onPick=${onFilter}
+                                            active=${filter === r.exception_class} /></span>
                         <span>${(r.triggers || []).map((t) =>
                           html`<span key=${t} class="tag">${t}</span>`)}</span>
                         <span class="ev" title=${r.evidence}>${r.evidence}</span>
-                      </button>`;
+                      </div>`;
                     })}
                   </div>
                 </div>`}
@@ -1131,13 +1434,13 @@ function Curve({ curve, batchLine }) {
                 <g key=${"g" + t}>
                   <line x1=${P.l} x2=${W - P.r} y1=${y(t)} y2=${y(t)}
                         stroke=${t === 0 ? "rgba(245,242,234,.34)" : "rgba(245,242,234,.10)"} />
-                  <text x=${P.l - 12} y=${y(t) + 4} text-anchor="end" font-size="11.5"
+                  <text x=${P.l - 12} y=${y(t) + 4} text-anchor="end" font-size="12.5"
                         fill="rgba(245,242,234,.58)" font-family="JetBrains Mono, monospace">
                     ${t}%</text>
                 </g>`)}
               ${ticks.map((t) => html`
                 <text key=${"x" + t} x=${x(t)} y=${H - P.b + 24} text-anchor="middle"
-                      font-size="11.5" fill="rgba(245,242,234,.58)"
+                      font-size="12.5" fill="rgba(245,242,234,.58)"
                       font-family="JetBrains Mono, monospace">${t}%</text>`)}
 
               <path d=${area} fill=${CHART_ACCENT} class=${"area-fade" + drawn} />
@@ -1160,10 +1463,10 @@ function Curve({ curve, batchLine }) {
                 </g>` : ""}
               <line x1=${P.l} x2=${P.l} y1=${P.t} y2=${P.t + ih}
                     stroke="rgba(245,242,234,.34)" />
-              <text x=${P.l + iw / 2} y=${H - 8} text-anchor="middle" font-size="12"
+              <text x=${P.l + iw / 2} y=${H - 8} text-anchor="middle" font-size="13"
                     fill="rgba(245,242,234,.72)">Share of queue reviewed</text>
               <text transform=${`translate(18,${P.t + ih / 2}) rotate(-90)`}
-                    text-anchor="middle" font-size="12"
+                    text-anchor="middle" font-size="13"
                     fill="rgba(245,242,234,.72)">Exposure retired</text>
             </svg>
             <div class="legend">
@@ -2009,6 +2312,8 @@ function App() {
   const [wire, setWire] = useState({});               // url -> [received, total]
   const [batch, setBatch] = useState("eval");
   const [selected, setSelected] = useState(null);
+  // One exception-class filter, shared by the treemap, the class table and the queue.
+  const [classFilter, setClassFilter] = useState(null);
   const [synthAvailable, setSynth] = useState(false);
 
   // Only the first batch is measured; later batches use the inline loading line.
@@ -2092,6 +2397,9 @@ function App() {
   const applyBatch = useCallback((k) => {
     setBatch(k);
     setSelected(null);
+    // Class rows differ between batches, so a filter set on one is meaningless on the
+    // other. Clearing it is the only honest carry-over.
+    setClassFilter(null);
     if (typeof window !== "undefined") {
       // "instant" and not scrollTo(0, 0): the stylesheet sets scroll-behavior: smooth
       window.scrollTo({ top: 0, left: 0, behavior: "instant" });
@@ -2179,12 +2487,15 @@ function App() {
                onTour=${() => setTour(true)} />
         <div class="main">
         <${Overview} summary=${summary.data} queue=${queue.data}
-                     complete=${queue.complete} batchLine=${bLine} />
-        <${Summary} s=${summary.data} batchLine=${bLine} />
+                     complete=${queue.complete} batchLine=${bLine}
+                     filter=${classFilter} onFilter=${setClassFilter} />
+        <${Summary} s=${summary.data} batchLine=${bLine}
+                    filter=${classFilter} onFilter=${setClassFilter} />
         <${Regimes} regimes=${summary.data.regimes} batchLine=${bLine} />
         <${Queue} queue=${queue.data.queue} total=${queue.data.rows}
                   complete=${queue.complete} selected=${selected} onSelect=${setSelected}
-                  batchLine=${bLine} />
+                  batchLine=${bLine}
+                  filter=${classFilter} onFilter=${setClassFilter} />
         <${Curve} curve=${curve.data} batchLine=${bLine} />
         <footer>
           <div class="wrap note-sm">

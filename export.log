@@ -10,6 +10,7 @@ EXPORT — static JSON for a front end
   regimes from findings.log: train {'repeat': 83.18, 'neither': 14.17, 'partition': 2.65} / eval {'repeat': 79.09, 'neither': 17.82, 'partition': 3.09}
   reference comparison from score.log: MatcherByChatGPT_submission.csv at 62.4501% / 95.2503%
   throughput parsed from ctrl.log for: ['eval', 'synth']
+  operating points from complete.log: 10 thresholds, flat band 0.5-0.65
 
   exporting batches: ['eval', 'synth']
 
@@ -33,14 +34,14 @@ OUTPUT SIZE
 ====================================================================================================
 
                          file    bytes     MB
-            summary_eval.json     4104  0.004
+            summary_eval.json     8214  0.008
               curve_eval.json      794  0.001
               queue_eval.json   198891  0.199
            queue_eval_p1.json   201409  0.201
            queue_eval_p2.json   196496  0.196
            queue_eval_p3.json    23963  0.024
   detail/eval/  (3,133 files)  4059779  4.060
-           summary_synth.json     2292  0.002
+           summary_synth.json     3754  0.004
              curve_synth.json      800  0.001
              queue_synth.json   211923  0.212
           queue_synth_p1.json   211981  0.212

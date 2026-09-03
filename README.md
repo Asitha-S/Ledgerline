@@ -425,6 +425,75 @@ surfaced in the interface with the claimed figure next to what was actually in t
 rather than being suppressed or silently regenerated. A separate check confirms no response
 proposed a match: 58 of 58 clean.
 
+### 8. The date window was inherited, never tested, and barely matters
+
+**Assumed.** Candidates must fall within ±7 days of the statement date. The value came
+from BenchRec's own timing and was never questioned, which it should have been: real
+settlement timing is different. International settlement runs T+7 rather than T+2, bank
+holidays compound delays, and refunds land weeks after the payment they reverse.
+
+**Measured** (`datewindow.log`, by `datewindow.py`). Eleven intervals from 0 days to
+unbounded, plus four one-sided variants. At ±7 the sweep reproduces `retrieve.log`
+exactly — 95.3688% single-key match, 98.4138% precision, 95.3688% top-1, 89.9900%
+overall, 3.8474% abstention — so every other row differs from the shipped retriever only
+in the date interval. The script exits rather than report anything if that check fails.
+
+On eval the window buys almost nothing. The recall ceiling blocking imposes moves
+**0.619 points across the entire range**, 96.197% with no window at all to 96.816%
+unbounded, and ±7 is the narrowest interval within a tenth of a point of the maximum.
+
+| window | pool after amount block | ceiling | top-1 | precision |
+|---|---|---|---|---|
+| 0 days | 6.69 | 96.197% | **96.001%** | **99.682%** |
+| ±3 | 10.72 | 96.630% | 95.605% | 98.786% |
+| **±7** | 14.08 | 96.720% | 95.369% | 98.414% |
+| ±30 | 24.13 | 96.799% | 95.000% | 97.871% |
+| unbounded | 36.72 | 96.816% | 94.787% | 97.599% |
+
+The reason is in the data: **98.829%** of true matches are same-day, median gap 0.0 days,
+p99 1.0, with only 0.865% of ledger rows landing before their statement and 0.306% after.
+Amount and account blocking do the discriminating; the date window is close to inert.
+
+**Widening it is not free, and not in the direction expected.** Every step wider *lowers*
+match rate and precision — 96.001% to 94.787% and 99.682% to 97.599% from no window to
+unbounded — because the extra candidates are overwhelmingly decoys and each is another
+chance to rank one first. The work grows with it: candidates per query after date
+blocking go from 662.86 to 37,123.00 — the entire ledger side — and runtime with them.
+The ceiling and the ranking curves separate immediately and never re-converge.
+
+**The asymmetry test is the more interesting half, and it splits by dataset.** Settlement
+delay runs in one direction, so a one-sided window ought to be enough. On eval it very
+nearly is, because almost everything is same-day: ledger-before-statement only costs
+0.116 points of ceiling, statement-before-ledger only 0.406, while halving the pool. On
+the synthetic batch, where the generator spreads offsets deliberately, true matches span
+both directions in almost exactly equal proportion — **12.519% before, 12.570% after** —
+and a one-sided window costs **11.243 points** of ceiling. Where timing is genuinely
+two-sided the symmetric window is required by the data, not chosen for convenience.
+
+**The synthetic batch is the opposite result, and it validates the method.** There the
+ceiling climbs steeply and then stops dead: 67.457% at 0 days, 77.443% at ±3, 83.744% at
+±5, **90.026% at ±7**, and then `+0.000` at ±14, ±30, ±60 and unbounded. Narrowing to ±3
+gives up 12.583 points. `synth_manifest.json` records the injected offsets as
+`{min_days: 1, max_days: 7}` — **the sweep recovers the generator's timing width exactly,
+without being told it**. On that batch ±7 is not a plateau but a knee, and it is the
+right value only because it matches the distribution.
+
+**Changed.** Nothing. `retrieve.py`'s shipped configuration is untouched and no parameter
+was refitted; this is measurement over a choice already made.
+
+**Consequence.** On BenchRec the window is a performance parameter presenting as a
+correctness one, and a deployment with slower settlement can widen it safely — ±30 costs
+0.369 points of match rate. But the two batches disagree, which is the point: whether ±7
+is safe or critical is a property of the batch's timing distribution, not of the
+retriever. It should be measured per deployment, and `datewindow.py` is how.
+
+**Scope, stated rather than implied.** This sweeps retrieval only — pool size, ceiling,
+top-1, top-5, and the match rate and precision of posting the retrieved answer blind. Set
+completion and the controller are not re-run per window, because they would have to be
+refitted per window and refitting a classifier eleven times to measure a blocking
+parameter answers a different question. The retrieval ceiling bounds everything
+downstream of it.
+
 ---
 
 ## What precision does not tell you about the balance
@@ -638,6 +707,58 @@ on for synthetic, which contains fees by construction, where it gains +4.750 poi
 
 ---
 
+## What would transfer, and what would not
+
+The claim is layered, and the layers are not equally strong. Each is named with the
+evidence for it and nothing beyond that evidence.
+
+**The decision layer transfers.** It consumes a proposed match and its candidate pool and
+decides whether the proposal is defensible, which is independent of how the proposal was
+produced — it sits on top of any matcher. That is an argument from construction, but it
+also has a measurement behind it: the same thresholds, fitted on BenchRec train, were
+applied unchanged to a synthetic batch built by a different generator with different
+corruption classes. Auto-close precision held at **98.431%** there against **98.368%** on
+eval — 0.063 points apart on data it had never seen — while coverage moved from 90.224%
+to 78.770% (`ctrl.log`). It gave up coverage rather than correctness, which is the
+behaviour a control layer is supposed to have under shift.
+
+**The date window is not a fitted parameter, but its right value is data-dependent.**
+Finding 8 measured it: 0.619 points of ceiling separate no window from an unbounded one on
+eval. Nothing depends on the number being 7. But the same sweep on synthetic showed a
+12.583-point cliff below ±7, so "not fitted" does not mean "universal" — it means the
+parameter is cheap to measure and should be measured per batch rather than inherited.
+
+**The completion classifier degrades measurably under distribution shift, and it is the
+component that would break first.** Worth **+1.8036** points of overall match rate on
+BenchRec and **−2.300** on synthetic, collapsing **50.546 points** on
+`duplicate_reference` — a corruption class absent from its training data (finding 5).
+This is a measured failure with a named cause, not a hypothetical one. Anything relying on
+set completion should expect it to need retraining on the target distribution.
+
+**Amount blocking is the piece that would need rethinking.** BenchRec is single-currency
+and single-account, and no fee is ever deducted between the two sides, so an exact-amount
+block is nearly free discrimination. Settlement data is not like that — a fee is deducted
+almost always. The synthetic batch shows what that costs directly: its `fee_deduction`
+class, 4,688 rows where a fee was subtracted, matches at **0.128%** under the shipped
+cosine-plus-amount recipe (`gen.log`). A rule keyed on amount equality cannot see a row
+whose amount was changed.
+
+Widening the band is not the fix, and the same batch shows why. Its `unmatchable` class —
+343 rows that have no correct counterparty at all — still receives an answer **67.347%**
+of the time, at **0.000%** precision (`gen.log`): a tolerant amount rule finds *something*
+for almost everything, and what it finds is wrong. On the controller side the widened-band
+trigger escalates 5,681 synthetic rows of which **60.887%** were already correct
+(`ctrl.log`) — coverage given up rather than error caught, the same bad exchange rate as
+findings 3 and 6.
+
+**The honest summary.** One layer is portable and was tested across a distribution shift.
+One parameter is not fitted, but needs measuring per batch. One component has a measured
+failure mode and a named trigger for it. One blocking rule is specific to this dataset's
+shape and would have to be replaced rather than tuned. That is a narrower claim than "the
+system generalises", and it is the one the measurements support.
+
+---
+
 ## Limitations
 
 **The synthetic result is the real generalisation signal, and it is worse.** Auto-close
@@ -669,6 +790,68 @@ all of them have landed.
 
 Eval labels were used for measurement only. No threshold, feature or hyperparameter was
 selected against them.
+
+---
+
+## How the numbers here were checked
+
+Every figure in this document was written by someone working from a conversation and a
+memory of earlier runs, then checked against a log before it shipped. Three failed that
+check. They are reported here because the corrections are the evidence that the checking
+is real rather than claimed.
+
+**A ceiling that existed nowhere.** The first commit (`00b46f7`) said integer cents
+*"moved the measured true-match ceiling for the 0.01 tolerance from 96.3968% to
+96.7196%"*. The second number is in `retrieve.log`. The first is in no log in this
+repository. What the log actually records is a pair of ceilings at two different
+tolerances — **96.0808% at exact-amount blocking and 96.7196% at 0.01** — which is a
+different fact than a before-and-after of a bug fix. `96.3968` had been carried from a
+conversation rather than read from the file, and it survived into a commit because it
+looked like the kind of number that belonged there. Finding 2 now states the measured
+pair and says which of the two the comparison was implementing.
+
+**Three regulatory claims that were never in the regulation.** Daily reconciliation of
+the nodal balance, a definition of collected-but-unsettled funds, and a transaction-level
+ledger requirement were all proposed for *Why this matters to a payment company*, sourced
+from a third-party summary of the RBI payment aggregator guidelines. Grepping the
+circular itself (`Id=11822`) returns nothing for "nodal account", "unsettled" or
+"ledger". The reporting calendar was wrong in the same way: the escrow-balance auditor
+certificate is **quarterly by the 15th**, not monthly, and what is monthly is
+*Statistics of Transactions Handled*, by the 7th. None of the three were written. Clause
+8.6 was quoted verbatim in their place, which carries the point on its own.
+
+**A blocking statistic with no source.** *"82.4% of eval blocking is amount-driven"* was
+written for the generalisation section. It appears in no log — the only `82.4` in the
+whole corpus is inside `182.46B` in `exposure.log`, and `ctrl.log`'s nearby `96.432` is a
+column in the low-confidence threshold grid, not a share of rejections. So the claim was
+replaced by measurements that do exist and are more direct: amount blocking cuts the pool
+to a mean of 14.72 candidates with a median of 1 (`retrieve.log`), and the synthetic
+`fee_deduction` class — rows whose amount was altered by a fee — matches at **0.128%**
+(`gen.log`). The replacement is a stronger argument than the figure it replaced, which is
+worth saying: checking is not only a way to catch overstatement. The same thing happened
+to finding 3, where reading `retrieve.log` showed the digit-run filter is not "completely
+redundant" at all — it buys **99.4521%** precision, **+1.0383 points**, at a cost of
+32.5615 points of match rate. The heading was wrong in the direction of understating a
+real effect.
+
+All three were caught the same way: by opening the artefact instead of trusting the
+recollection of it. That is the same discipline that stopped four builds elsewhere in
+this project — the subset-sum solver, the digit-run filter, the `low_confidence` trigger
+and the drift gate — where measuring the thing first contradicted the belief about it.
+The failure mode is not carelessness; it is that a remembered number and a read number
+feel identical while you are writing.
+
+**The checker.** `trace.py` extracts every numeric token from this file and resolves each
+against the log files the pipeline wrote. Its running total is deliberately not quoted
+here: this paragraph sits inside the file being checked, so any count written into it
+changes the count. Run it and read the tail. What it reports as unresolved falls into four
+declared classes, none of which a log can satisfy — figures written as the difference of
+two logged numbers, where both operands are printed beside them; file sizes and counts
+measured off disk; identifiers, dates and figures belonging to the external sources cited
+in the two referenced sections; and `96.3968`, quoted a few paragraphs above precisely
+because it resolves to nothing. The word "every" does not appear anywhere in this document
+attached to a claim about checking, because those exceptions exist and the sentence would
+be false.
 
 ---
 
@@ -708,6 +891,9 @@ python drift.py > drift.log           # ~1 min
 
 # 10. Whether the drift blind spot can be gated at decision time, and what that costs
 python driftgate.py > driftgate.log   # ~1 min
+
+# 11. Retrieval sensitivity to the +/-7 day blocking window
+python datewindow.py > datewindow.log # ~12 min
 
 # supporting measurements for the findings above
 python findings.py > findings.log     # ~1 min
@@ -759,10 +945,11 @@ deltas, which triggers fired, the decision and the evidence, so any single decis
 reconstructed.
 
 Every number in this README appears in `score.log`, `retrieve.log`, `complete.log`, `gen.log`,
-`synth_run.log`, `ctrl.log`, `exposure.log`, `drift.log`, `driftgate.log`, `export.log`,
+`synth_run.log`, `ctrl.log`, `exposure.log`, `drift.log`, `driftgate.log`, `datewindow.log`, `export.log`,
 `investigate.log`, `findings.log` or `investigations.jsonl`. That is checked mechanically over
-every numeric token in the file, and what it does not resolve falls into three deliberate
-classes. A figure written as a difference (−2.300, −50.546, −4.821, and the coverage-for-precision trade in finding 6) is the
+every numeric token in the file, and what it does not resolve falls into the deliberate
+classes set out under
+[How the numbers here were checked](#how-the-numbers-here-were-checked). A figure written as a difference (−2.300, −50.546, −4.821, and the coverage-for-precision trade in finding 6) is the
 subtraction of two logged numbers, and both operands are printed beside it. File sizes and
 counts (211,923 and 2,209,247 bytes) are measured off disk. And the identifiers, dates and
 figures in the two cited sections — *Why there is no subset-sum solver here* and *Why this
