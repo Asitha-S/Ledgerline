@@ -1,0 +1,37 @@
+# Only web/ is deployed. Everything else in this repository is either source data we
+# have no right to redistribute, or pipeline output that has no business on a public
+# URL. This file matters more than it looks: `vercel` deploys from the WORKING
+# DIRECTORY, not from what git tracks, so .gitignore does not protect these.
+
+# ---- source data. BenchRec is not ours to publish.
+BenchRec_*.csv
+MatcherByChatGPT_submission.csv
+synth_transactions.csv
+synth_solution.csv
+synth_small_*.csv
+synth_manifest.json
+*_predictions*.csv
+exceptions_ranked_*.csv
+controller_exceptions_*.csv
+complete_predictions.csv
+
+# ---- pipeline internals
+controller_audit_*.jsonl
+investigations.jsonl
+*.log
+*.py
+benchrec_report.md
+
+# ---- local
+.env
+.env.example
+.venv/
+__pycache__/
+screenshots/
+node_modules/
+.git/
+.claude/
+
+# ---- docs stay in the repository, not on the deployment
+README.md
+MEMORY.md

@@ -30,7 +30,14 @@ const BATCHES = [
 const BATCH_HUE = { eval: "#BFF442", synth: "#2563EB" };
 const hueForBatch = (k) => BATCH_HUE[k] || "#BFF442";
 
-const CURTAIN_MS = 260;      // half the wipe; the swap happens between the two halves
+/* In decisively, out quickly. The destination is swapped in while the curtain is at
+ * full cover, so the reveal shows the page already in place. */
+const CURTAIN_IN_MS = 280;
+const CURTAIN_OUT_MS = 200;
+/* Long enough for the title card to finish arriving. At 80ms the copy animation was
+ * still fading in when the wipe started leaving, so the destination label was never
+ * actually readable and the exit began before the entrance had landed. */
+const CURTAIN_HOLD_MS = 260;
 
 /* ---------------------------------------------------------------- palette */
 
@@ -559,8 +566,12 @@ const BANDS = 6;             // how many independent breathing cycles
  * `animate` draws them in from largest to smallest and then lets the big ones drift on
  * long, offset cycles. Both are pure CSS off per-cell custom properties, so the main
  * thread is not running 3,133 timers. */
+/* `bg` draws the dark ground the hero sits on. The curtain turns it off: there the map
+ * is a texture over cream, and a full-size dark rect underneath would drag the whole
+ * surface toward the colour the curtain was just changed away from. */
 function Treemap({ queue, W = 1600, H = 720, fit = "xMidYMid meet", cells: given,
-                   floor = 0.46, highlight = -1, animate = false, dimClass = null }) {
+                   floor = 0.46, highlight = -1, animate = false, dimClass = null,
+                   bg = true }) {
   const cells = useMemo(() => given || treemapCells(queue, W, H), [given, queue, W, H]);
   const maxA = cells.length ? cells[0].w * cells[0].h : 1;
   const big = highlight >= 0 ? cells[highlight] : null;
@@ -603,7 +614,7 @@ function Treemap({ queue, W = 1600, H = 720, fit = "xMidYMid meet", cells: given
   return html`
     <svg viewBox=${`0 0 ${W} ${H}`} role="img" preserveAspectRatio=${fit}
          aria-label="Every escalated transaction, sized by exposure, coloured by exception class">
-      <rect x="0" y="0" width=${W} height=${H} fill=${PAL.dark} />
+      ${bg ? html`<rect x="0" y="0" width=${W} height=${H} fill=${PAL.dark} />` : ""}
       ${animate
         ? banded.map((band, b) => html`
             <g key=${"band" + b} class="tm-band"
@@ -1599,6 +1610,150 @@ function Investigation({ inv, detail }) {
     </div>`;
 }
 
+/* ---------------------------------------------------------------- decision trace
+ *
+ * A replay of what the audit already recorded, revealed a step at a time. It is not a
+ * live run and nothing here is recomputed: every line is read out of the same detail
+ * JSON the rest of the panel renders, and running it twice produces the same steps in
+ * the same order.
+ *
+ * The steps a row HAS depend on what happened to it. A row whose pool came back empty
+ * has nothing to say about candidates, exact amounts or duplicate references, and
+ * padding it out with empty rows would misrepresent it as having considered things it
+ * never saw. So absent steps are omitted rather than shown blank, and the trace length
+ * is itself information: four steps means the pool was empty. */
+
+/* The reveal is paced to a TOTAL duration rather than a fixed gap, so a nine-step row
+ * and a five-step row both take about the same time to watch — which is what makes it
+ * usable in a walkthrough. The per-step gap is clamped so a very short trace does not
+ * sit on long empty pauses and a very long one does not flicker past. */
+const TRACE_TOTAL_MS = 6000;
+const TRACE_MIN_MS = 440;
+const TRACE_MAX_MS = 1400;
+const traceGap = (n) => n < 2 ? 0
+  : Math.min(TRACE_MAX_MS, Math.max(TRACE_MIN_MS, Math.round(TRACE_TOTAL_MS / (n - 1))));
+
+function traceSteps(d) {
+  if (!d) return [];
+  const t = d.transaction || {};
+  const cur = t.currency || CURRENCY;
+  const cands = d.candidates || [];
+  const added = d.added_keys || [];
+  const trig = d.triggers || [];
+  const out = [];
+
+  out.push({ k: "received", n: "Statement row received",
+             v: `${money(t.amount_cents)} ${cur}` +
+                (t.debit_or_credit ? ` ${t.debit_or_credit}` : "") +
+                (t.value_date ? ` · value ${t.value_date}` : "") });
+
+  out.push({ k: "pool", n: "Candidate pool constructed",
+             v: d.candidate_pool_size === null || d.candidate_pool_size === undefined
+               ? "size not recorded"
+               : `${int(d.candidate_pool_size)} ledger row${
+                   d.candidate_pool_size === 1 ? "" : "s"} after blocking` });
+
+  if (cands.length) {
+    out.push({ k: "retrieved", n: "Candidates retrieved and ranked",
+               v: `${int(cands.length)} scored · top-1 similarity ${score(d.top1_score)}` +
+                  (d.margin === null || d.margin === undefined
+                    ? "" : ` · margin ${score(d.margin)}`) });
+    // Only meaningful when something was actually scored.
+    out.push({ k: "exact", n: d.exact_amount_top1
+                 ? "Exact amount match on the top candidate"
+                 : "No exact amount match on the top candidate",
+               v: d.exact_amount_top1
+                 ? `${cands[0] ? cands[0].a_id : ""} matches to the cent`
+                 : "the closest candidate differs from the statement amount" });
+  }
+
+  if (d.duplicate_reference_among_candidates) {
+    out.push({ k: "dup", n: "Duplicate reference among candidates",
+               v: "two or more candidates share a reference, so the pool cannot be " +
+                  "separated on reference alone" });
+  }
+
+  added.forEach((a, i) => {
+    out.push({ k: "added" + i,
+               n: added.length > 1
+                 ? `Completion added a key (${i + 1} of ${added.length})`
+                 : "Completion classifier added a key",
+               v: a.probability === null || a.probability === undefined
+                 ? "probability not recorded"
+                 : `probability ${nf(4, 4).format(a.probability)}`,
+               mono: a.allocation_key });
+  });
+
+  if (trig.length) {
+    out.push({ k: "trig", n: `Trigger${trig.length > 1 ? "s" : ""} fired`,
+               v: trig.join(", ") });
+  }
+
+  out.push({ k: "decision",
+             n: d.decision === "escalate" ? "Escalated — not posted" : "Auto-closed",
+             v: d.exception_class
+               ? `exception class ${d.exception_class}`
+               : (d.answer_keys || []).length
+                 ? `${int((d.answer_keys || []).length)} allocation key` +
+                   ((d.answer_keys || []).length === 1 ? " posted" : "s posted")
+                 : "proposed no match" });
+
+  if (d.investigation) {
+    out.push({ k: "inv", n: "Investigation recorded",
+               v: "an LLM explanation exists for this row, grounded against the " +
+                  "evidence above" });
+  }
+  return out;
+}
+
+function Trace({ d }) {
+  const steps = useMemo(() => traceSteps(d), [d]);
+  const [shown, setShown] = useState(0);      // 0 = not started
+  const timers = useRef([]);
+
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
+  useEffect(() => { setShown(0); timers.current.forEach(clearTimeout); }, [d]);
+
+  const run = () => {
+    timers.current.forEach(clearTimeout);
+    timers.current = [];
+    if (prefersReducedMotion()) { setShown(steps.length); return; }
+    setShown(1);
+    const gap = traceGap(steps.length);
+    for (let i = 2; i <= steps.length; i++) {
+      timers.current.push(setTimeout(() => setShown(i), (i - 1) * gap));
+    }
+  };
+
+  if (!steps.length) return "";
+  const done = shown >= steps.length;
+
+  return html`
+    <div class="trace">
+      <div class="trace-head">
+        <button class="trace-btn" onClick=${run} disabled=${shown > 0 && !done}>
+          ${shown === 0 ? "Trace decision" : done ? "Replay trace" : "Tracing…"}
+        </button>
+        <span class="trace-note">${
+          `Replay of the recorded decision — ${steps.length} steps for this row, ` +
+          `about ${nf(1, 1).format((steps.length - 1) * traceGap(steps.length) / 1000)}s. ` +
+          `Nothing is recomputed.`}</span>
+      </div>
+      ${shown > 0 ? html`
+        <ol class="trace-list">
+          ${steps.slice(0, shown).map((st, i) => html`
+            <li key=${st.k} class=${"trace-step" + (i === shown - 1 && !done ? " at" : "")}>
+              <span class="trace-i num">${String(i + 1).padStart(2, "0")}</span>
+              <span class="trace-body">
+                <span class="trace-n">${st.n}</span>
+                <span class="trace-v">${st.v}</span>
+                ${st.mono ? html`<span class="trace-key mono">${st.mono}</span>` : ""}
+              </span>
+            </li>`)}
+        </ol>` : ""}
+    </div>`;
+}
+
 function Detail({ bId, batch, onClose }) {
   const { data: d, error } = useJson(`${DATA}/detail/${batch}/${bId}.json`);
   useEffect(() => {
@@ -1639,6 +1794,9 @@ function Detail({ bId, batch, onClose }) {
               <dt>References</dt><dd class="mono">${t.references || "—"}</dd>
               <dt>Attributes</dt><dd class="mono">${t.attributes || "—"}</dd>
             </dl>
+
+            <h3>Trace decision</h3>
+            <${Trace} d=${d} />
 
             <h3>Why it was escalated</h3>
             ${triggerReasons(d).length === 0
@@ -2024,10 +2182,36 @@ function Tour({ summary, curve, navigate, onClose }) {
  * changing batch changes every figure on the page at once, and without it that reads
  * as numbers quietly updating rather than as a change of context. The swap happens
  * while the screen is covered, so no panel is ever seen half-updated. */
-function Curtain({ hue, phase, label }) {
+/* One curtain for every transition, in ink.
+ *
+ * It used to take the incoming batch's colour, which was cobalt — and cobalt is
+ * missing_counterparty's class colour everywhere else on the page. A full-screen field
+ * in a class colour reads as a statement about that class. Ink says nothing it should
+ * not.
+ *
+ * The treemap rides underneath at very low opacity, from the same cells the hero draws,
+ * so the transition is made of the product rather than of a flat fill. `cells` is
+ * computed once by the caller and handed in; recomputing a 3,133-rectangle layout
+ * inside a 280ms wipe would be the one place it could actually be felt. */
+function Curtain({ phase, kicker, label, cells }) {
   return html`
-    <div class=${"curtain " + phase} style=${{ background: hue }} aria-hidden="true">
-      <div class="curtain-label" style=${{ color: readableOn(hue) }}>${label}</div>
+    <div class=${"curtain " + phase} aria-hidden="true">
+      <div class="curtain-panel">
+        ${cells && cells.length
+          ? html`<div class="curtain-map">
+                   <${Treemap} cells=${cells} floor=${0.42} fit="none"
+                               bg=${false} />
+                 </div>`
+          : ""}
+      </div>
+      <div class="curtain-edge"></div>
+      <div class="curtain-grid">
+        <div class="curtain-mark">Ledgerline</div>
+        <div class="curtain-title">
+          <div class="curtain-kicker">${kicker}</div>
+          <div class="curtain-label">${label}</div>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -2078,13 +2262,18 @@ function useActiveSection(ready) {
   const [active, setActive] = useState("overview");
   const jump = useRef(null);               // { id, t } while a nav jump is in flight
 
-  const go = useCallback((id) => {
+  /* `instant` is for navigation that happens underneath a curtain: the scroll has to
+   * be finished before the curtain lifts, or the reveal shows the page still travelling.
+   * Passing behavior explicitly matters — the stylesheet sets scroll-behavior: smooth,
+   * which overrides an unqualified scrollIntoView. */
+  const go = useCallback((id, opts) => {
     if (typeof document === "undefined") return;
     const el = document.getElementById(id);
     jump.current = { id, t: Date.now() };
     setActive(id);
+    const instant = (opts && opts.instant) || prefersReducedMotion();
     if (el) el.scrollIntoView({ block: "start",
-      behavior: prefersReducedMotion() ? "auto" : "smooth" });
+      behavior: instant ? "instant" : "smooth" });
   }, []);
 
   useEffect(() => {
@@ -2374,11 +2563,6 @@ function App() {
 
   useEffect(() => { setTourTaken(tourSeen()); }, []);
 
-  const enter = useCallback(() => {
-    setView("controller");
-    if (typeof window !== "undefined") window.scrollTo(0, 0);
-  }, []);
-
   useEffect(() => {
     let live = true;
     fetch(`${DATA}/summary_synth.json`, { method: "GET" })
@@ -2393,6 +2577,83 @@ function App() {
    * happened to be in the old queue. */
   const [curtain, setCurtain] = useState(null);
   const swapTimers = useRef([]);
+
+  /* Every curtain goes through here, and only explicit clicks call it.
+   *
+   * NOT wired to it, deliberately: ordinary scrolling, the scroll-spy updating the
+   * active rail item, and the tour. The tour scrolls on nearly every one of its eight
+   * steps, so putting a wipe on programmatic scrolling would make it unwatchable — it
+   * navigates through `tourNavigate` and its own scroller, neither of which touches
+   * this.
+   *
+   * `act` runs at full cover and must leave the page where it belongs; the reveal then
+   * shows the destination already in place instead of a scroll in progress. */
+  /* The same rectangles the hero draws. Computed once here rather than inside the
+   * curtain: laying out 3,133 cells during a 280ms wipe is the one place the cost of
+   * the treemap would actually be felt. */
+  const curtainCells = useMemo(
+    () => (queue.data && queue.data.queue && queue.complete
+      ? treemapCells(queue.data.queue, 1600, 720) : null),
+    [queue.data, queue.complete]);
+
+  /* The curtain's texture is FROZEN at the moment it starts.
+   *
+   * It used to render from live queue data, which on a batch switch meant the map
+   * changed underneath the wipe: eval's queue is mostly missing_counterparty (cobalt)
+   * and the synthetic queue is mostly fee_band_match (tangerine), so the surface went
+   * blue, then briefly flat while the new batch was in flight, then red. A transition
+   * that redraws itself halfway is not a transition. */
+  const cellsRef = useRef(null);
+  cellsRef.current = curtainCells;
+
+  /* Kept per batch, because the curtain announces where you are GOING and should carry
+   * that batch's own texture. The destination's queue has not been fetched when the
+   * wipe starts, so it cannot be read live — and reading it live is what produced the
+   * blue-then-red flash. Once a batch has been visited its layout is here, and every
+   * later switch shows the right one. The first switch to a batch never seen falls
+   * back to the current texture rather than to a blank surface. */
+  const cellsByBatch = useRef({});
+  if (curtainCells) cellsByBatch.current[batch] = curtainCells;
+
+  /* Warm the other batch's texture once this one is on screen, so the FIRST switch
+   * already carries the destination's own colours instead of falling back to the one
+   * being left behind.
+   *
+   * Only the queue index is fetched, not the whole queue: page 0 is the thousand
+   * largest exposures, and in a treemap those are the rectangles that occupy nearly
+   * all the area — the rest are the fine grain. That is a ~130KB fetch instead of the
+   * synthetic queue's 2.11MB, for a texture shown at 20% opacity for under a second.
+   * When the batch is actually opened, its full layout replaces this one above. */
+  useEffect(() => {
+    if (!loaded) return;
+    let live = true;
+    BATCHES.map((x) => x.key)
+      .filter((k) => k !== batch && !cellsByBatch.current[k])
+      .filter((k) => k !== "synth" || synthAvailable)
+      .forEach((k) => {
+        fetch(`${DATA}/queue_${k}.json`)
+          .then((r) => (r.ok ? r.json() : null))
+          .then((j) => {
+            if (live && j && j.queue && j.queue.length) {
+              cellsByBatch.current[k] = treemapCells(j.queue, 1600, 720);
+            }
+          })
+          .catch(() => {});
+      });
+    return () => { live = false; };
+  }, [loaded, batch, synthAvailable]);
+
+  const runCurtain = useCallback((kicker, label, act, cells) => {
+    if (prefersReducedMotion()) { act(); return; }
+    swapTimers.current.forEach(clearTimeout);
+    swapTimers.current = [];
+    setCurtain({ kicker, label, phase: "in",
+                 cells: cells || cellsRef.current });
+    swapTimers.current.push(setTimeout(() => {
+      act();
+      setCurtain((c) => (c ? { ...c, phase: "hold" } : c));
+    }, CURTAIN_IN_MS));
+  }, []);
 
   const applyBatch = useCallback((k) => {
     setBatch(k);
@@ -2409,19 +2670,31 @@ function App() {
 
   const switchBatch = useCallback((k) => {
     if (k === batch) return;
-    swapTimers.current.forEach(clearTimeout);
-    swapTimers.current = [];
-    const hue = hueForBatch(k);
     const label = (BATCHES.find((b) => b.key === k) || {}).label || k;
-    if (prefersReducedMotion()) { applyBatch(k); return; }
-    setCurtain({ hue, label, phase: "in" });
-    swapTimers.current.push(setTimeout(() => {
-      applyBatch(k);
-      // Hold, covered, until the new batch has landed. Wiping away on a fixed timer
-      // showed the loading state for however long the fetch outlasted it.
-      setCurtain({ hue, label, phase: "hold" });
-    }, CURTAIN_MS));
-  }, [batch, applyBatch]);
+    // Holds covered until the new batch has landed — see the lift effect below. Wiping
+    // away on a fixed timer showed the loading state for however long the fetch
+    // outlasted it.
+    runCurtain("Switching batch", label, () => applyBatch(k),
+               cellsByBatch.current[k]);
+  }, [batch, applyBatch, runCurtain]);
+
+  /* Rail clicks. The scroll happens instantly, underneath full cover, so the page never
+   * visibly travels. Scrolling and scroll-spy do not come through here. */
+  const railGo = useCallback((id) => {
+    const item = NAV.find(([nid]) => nid === id);
+    if (!item) { go(id); return; }
+    runCurtain(`Section ${item[1]}`, item[2], () => go(id, { instant: true }));
+  }, [go, runCurtain]);
+
+  const enter = useCallback(() => {
+    const first = NAV[0];
+    runCurtain(`Section ${first[1]}`, first[2], () => {
+      setView("controller");
+      if (typeof window !== "undefined") {
+        window.scrollTo({ top: 0, left: 0, behavior: "instant" });
+      }
+    });
+  }, [runCurtain]);
 
   useEffect(() => () => swapTimers.current.forEach(clearTimeout), []);
 
@@ -2431,9 +2704,9 @@ function App() {
     if (!curtain || curtain.phase !== "hold") return;
     const lift = () => {
       setCurtain((c) => (c && c.phase === "hold" ? { ...c, phase: "out" } : c));
-      swapTimers.current.push(setTimeout(() => setCurtain(null), CURTAIN_MS));
+      swapTimers.current.push(setTimeout(() => setCurtain(null), CURTAIN_OUT_MS));
     };
-    const t = setTimeout(lift, loaded ? 80 : 2000);
+    const t = setTimeout(lift, loaded ? CURTAIN_HOLD_MS : 2000);
     return () => clearTimeout(t);
   }, [curtain, loaded]);
 
@@ -2483,7 +2756,7 @@ function App() {
         <${Ticker} summary=${summary.data} queue=${queue.data} />
         <${TopBar} summary=${summary.data} batch=${batch} setBatch=${switchBatch}
                  synthAvailable=${synthAvailable} onHome=${() => setView("landing")} />
-        <${Rail} active=${active} onGo=${go} tourTaken=${tourTaken}
+        <${Rail} active=${active} onGo=${railGo} tourTaken=${tourTaken}
                onTour=${() => setTour(true)} />
         <div class="main">
         <${Overview} summary=${summary.data} queue=${queue.data}
@@ -2506,6 +2779,24 @@ function App() {
             value on screen comes from the exported JSON. Amounts are stored as integer cents
             and shown in ${CURRENCY}.
           </div>
+          <div class="wrap note-sm attrib">
+            <strong>Data attribution.</strong>${" "}The BenchRec batch is${" "}
+            <a href="https://www.operartis.com/benchrec" target="_blank"
+               rel="noopener">BenchRec: A Real-World Cash Reconciliation Dataset</a>,${" "}
+            released by Operartis and licensed${" "}
+            <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank"
+               rel="noopener">CC BY 4.0</a>. Also published on${" "}
+            <a href="https://www.kaggle.com/datasets/benchmarkteam/benchrec-real-world-cash-reconciliation-dataset"
+               target="_blank" rel="noopener">Kaggle</a>.${" "}
+            <strong>The data shown here has been modified</strong>: monetary values were
+            converted to integer cents; eval group membership was reconstructed from the
+            keys each label names, because${" "}<code>matchId</code>${" "}is blank on all
+            69,171 eval rows; and per-row records were derived into decision audit form —
+            candidates, scores, triggers and outcome — rather than reproduced as issued.
+            The synthetic batch is not BenchRec: it was generated by${" "}
+            <code>generate.py</code>${" "}in this project and carries no third-party
+            licence.
+          </div>
         </footer>
         </div>
         ${selected
@@ -2522,8 +2813,8 @@ function App() {
                         navigate=${tourNavigate} onClose=${endTour} />`
         : ""}
       ${curtain
-        ? html`<${Curtain} hue=${curtain.hue} phase=${curtain.phase}
-                           label=${curtain.label} />`
+        ? html`<${Curtain} phase=${curtain.phase} kicker=${curtain.kicker}
+                           label=${curtain.label} cells=${curtain.cells} />`
         : ""}
     </div>`;
 }
